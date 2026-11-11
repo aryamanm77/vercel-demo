@@ -1,0 +1,14 @@
+.env
+.env.local
+.env.*.local
+out/
+secrets/
+data/
+certs/
+*.key
+*.p12
+*.log
+*.mv.db
+*.db
+*.class
+.vercel

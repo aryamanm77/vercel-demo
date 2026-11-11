@@ -1,0 +1,14 @@
+.git
+.env
+.env.*
+out/
+test/
+scripts/
+*.bat
+*.sh
+*.log
+*.class
+secrets/
+data/
+certs/
+README.md
