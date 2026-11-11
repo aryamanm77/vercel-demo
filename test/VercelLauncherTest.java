@@ -26,7 +26,7 @@ public final class VercelLauncherTest {
     private static void testPostgresUriConversion() {
         var target = VercelLauncher.convertPostgresUriToJdbc(
                 "postgres://neondb_owner:p%40ss%3Aword%2F1@ep-cool-forest-1234.us-east-1.aws.neon.tech:5432/neondb?pgbouncer=true&sslmode=require");
-        assertEq("jdbc:postgresql://ep-cool-forest-1234.us-east-1.aws.neon.tech:5432/neondb?sslmode=require", target.jdbcUrl());
+        assertEq("jdbc:postgresql://ep-cool-forest-1234.us-east-1.aws.neon.tech:5432/neondb?sslmode=require&prepareThreshold=0", target.jdbcUrl());
         assertEq("neondb_owner", target.username());
         assertEq("p@ss:word/1", target.password());
 
@@ -35,6 +35,18 @@ public final class VercelLauncherTest {
         assertEq("jdbc:postgresql://db.example.internal/qbank?sslmode=require", noQuery.jdbcUrl());
         assertEq("user1", noQuery.username());
         assertEq("secret", noQuery.password());
+
+        String validB64 = randomB6432();
+        var pooledCfg = VercelLauncher.buildLaunchConfig(Map.of(
+                "QBANK_ENCRYPTION_KEY", validB64,
+                "QBANK_SIGNING_KEY", validB64,
+                "DATABASE_URL", "postgres://prisma_migration:directpw@db.prisma.io:5432/postgres?sslmode=require",
+                "DATABASE_URL_POOLED", "postgres://pooluser:poolpw@db.prisma.io:5432/postgres?sslmode=require",
+                "PRISMA_DATABASE_URL", "prisma+postgres://accelerate.prisma-data.net/?api_key=ignored"
+        ), Path.of("").toAbsolutePath().normalize());
+        assertEq("jdbc:postgresql://db.prisma.io:5432/postgres?sslmode=require&prepareThreshold=0", pooledCfg.jdbcUrl());
+        assertEq("pooluser", pooledCfg.dbUsername());
+        assertEq("poolpw", pooledCfg.dbPassword());
     }
 
     private static void testMissingEnvFailsFast() {

@@ -35,14 +35,20 @@ public final class VercelLauncher {
         cmd.add("--qbank.base-path=" + cfg.basePath());
         cmd.add("--qbank.storage-dir=" + cfg.storageDir());
         cmd.add("--qbank.backup.enabled=false");
-        cmd.add("--qbank.datasource.url=" + cfg.jdbcUrl());
+        cmd.add("--qbank.datasource.url=");
+        cmd.add("--spring.datasource.url=" + cfg.jdbcUrl());
         if (!cfg.dbUsername().isBlank()) {
-            cmd.add("--qbank.datasource.username=" + cfg.dbUsername());
+            cmd.add("--spring.datasource.username=" + cfg.dbUsername());
         }
+        cmd.add("--spring.datasource.hikari.maximum-pool-size=" + envOrDefault(System.getenv(), "QBANK_DB_MAX_POOL_SIZE", "2"));
+        cmd.add("--spring.datasource.hikari.minimum-idle=0");
+        cmd.add("--spring.datasource.hikari.idle-timeout=30000");
+        cmd.add("--spring.datasource.hikari.max-lifetime=300000");
 
         ProcessBuilder pb = new ProcessBuilder(cmd).inheritIO();
         Map<String, String> childEnv = pb.environment();
-        childEnv.put("QBANK_DB_PASSWORD", cfg.dbPassword());
+        childEnv.put("SPRING_DATASOURCE_PASSWORD", cfg.dbPassword());
+        childEnv.put("QBANK_DB_PASSWORD", "");
         childEnv.put("QBANK_ENCRYPTION_KEY", cfg.encryptionKeyBase64());
         childEnv.put("QBANK_SIGNING_KEY", cfg.signingKeyBase64());
         childEnv.put("QBANK_ENCRYPTION_KEY_FILE", "");
@@ -89,14 +95,21 @@ public final class VercelLauncher {
             );
         }
 
-        String postgresUri = firstNonBlank(
-                env.get("DATABASE_URL"),
+        String pooledUri = firstPostgresUri(
+                env.get("DATABASE_URL_POOLED"),
+                env.get("POSTGRES_PRISMA_URL")
+        );
+        if (pooledUri != null) {
+            return convertPostgresUriToJdbc(pooledUri, true);
+        }
+
+        String postgresUri = firstPostgresUri(
                 env.get("POSTGRES_URL"),
-                env.get("POSTGRES_PRISMA_URL"),
+                env.get("DATABASE_URL"),
                 env.get("POSTGRES_URL_NON_POOLING")
         );
         if (postgresUri != null) {
-            return convertPostgresUriToJdbc(postgresUri);
+            return convertPostgresUriToJdbc(postgresUri, false);
         }
 
         if ("true".equalsIgnoreCase(trimToEmpty(env.get("QBANK_VERCEL_DEMO_EPHEMERAL_H2")))) {
@@ -111,6 +124,10 @@ public final class VercelLauncher {
     }
 
     static JdbcTarget convertPostgresUriToJdbc(String rawUri) {
+        return convertPostgresUriToJdbc(rawUri, false);
+    }
+
+    static JdbcTarget convertPostgresUriToJdbc(String rawUri, boolean pooled) {
         String trimmed = rawUri.trim();
         if (trimmed.startsWith("jdbc:postgresql://")) {
             return new JdbcTarget(trimmed, "", "");
@@ -151,17 +168,15 @@ public final class VercelLauncher {
         }
         jdbc.append(path);
         String rawQuery = uri.getRawQuery();
-        if (rawQuery != null && !rawQuery.isBlank()) {
-            jdbc.append('?').append(sanitizeQueryForPgJdbc(rawQuery));
-        } else {
-            jdbc.append("?sslmode=require");
-        }
+        jdbc.append('?').append(sanitizeQueryForPgJdbc(rawQuery == null ? "" : rawQuery, pooled));
         return new JdbcTarget(jdbc.toString(), user, password);
     }
 
-    private static String sanitizeQueryForPgJdbc(String rawQuery) {
+    private static String sanitizeQueryForPgJdbc(String rawQuery, boolean pooled) {
         Map<String, String> kept = new LinkedHashMap<>();
         boolean hasSslMode = false;
+        boolean pgbouncerHint = pooled;
+        boolean hasPrepareThreshold = false;
         for (String pair : rawQuery.split("&")) {
             if (pair.isBlank()) {
                 continue;
@@ -169,17 +184,27 @@ public final class VercelLauncher {
             int eq = pair.indexOf('=');
             String k = eq >= 0 ? pair.substring(0, eq) : pair;
             String v = eq >= 0 ? pair.substring(eq + 1) : "";
+            if ("pgbouncer".equalsIgnoreCase(k)) {
+                pgbouncerHint = pgbouncerHint || !"false".equalsIgnoreCase(v);
+                continue;
+            }
             // Strip libpq/Prisma-only hints that are unnecessary or conflicting for PgJDBC
-            if ("pgbouncer".equalsIgnoreCase(k) || "schema".equalsIgnoreCase(k) || "supa".equalsIgnoreCase(k)) {
+            if ("schema".equalsIgnoreCase(k) || "supa".equalsIgnoreCase(k)) {
                 continue;
             }
             if ("sslmode".equalsIgnoreCase(k)) {
                 hasSslMode = true;
             }
+            if ("prepareThreshold".equalsIgnoreCase(k)) {
+                hasPrepareThreshold = true;
+            }
             kept.put(k, v);
         }
         if (!hasSslMode) {
             kept.put("sslmode", "require");
+        }
+        if (pgbouncerHint && !hasPrepareThreshold) {
+            kept.put("prepareThreshold", "0");
         }
         List<String> parts = new ArrayList<>(kept.size());
         for (var e : kept.entrySet()) {
@@ -220,10 +245,16 @@ public final class VercelLauncher {
         return v == null ? fallback : v;
     }
 
-    private static String firstNonBlank(String... candidates) {
+    private static String firstPostgresUri(String... candidates) {
         for (String c : candidates) {
             String t = trimToNull(c);
-            if (t != null) return t;
+            if (t == null) {
+                continue;
+            }
+            String lower = t.toLowerCase();
+            if (lower.startsWith("postgres://") || lower.startsWith("postgresql://") || lower.startsWith("jdbc:postgresql://")) {
+                return t;
+            }
         }
         return null;
     }
