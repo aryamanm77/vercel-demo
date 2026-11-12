@@ -165,11 +165,21 @@ public final class VercelLauncherTest {
                         if (adminSpa.statusCode() != 200 || !adminSpa.body().contains("<div id=\"root\"></div>")) {
                             throw new AssertionError("Unexpected /admin/login response: " + adminSpa.statusCode());
                         }
+                        HttpResponse<String> studentSpa = client.send(
+                                HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/student"))
+                                        .timeout(Duration.ofSeconds(2)).GET().build(),
+                                HttpResponse.BodyHandlers.ofString());
+                        if (studentSpa.statusCode() != 200 || !studentSpa.body().contains("<div id=\"root\"></div>")) {
+                            throw new AssertionError("Unexpected /student response: " + studentSpa.statusCode());
+                        }
                         HttpResponse<String> qbankIndex = client.send(
                                 HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/qbank/index.html"))
                                         .timeout(Duration.ofSeconds(2)).GET().build(),
                                 HttpResponse.BodyHandlers.ofString());
-                        if (qbankIndex.statusCode() != 200 || !qbankIndex.body().contains("/admin/login")) {
+                        if (qbankIndex.statusCode() != 200
+                                || !qbankIndex.body().contains("qbank-portal-switcher")
+                                || !qbankIndex.body().contains("/admin/login")
+                                || !qbankIndex.body().contains("/admin/student")) {
                             throw new AssertionError("Expected portal switcher link in /qbank/index.html, got " + qbankIndex.statusCode());
                         }
                         HttpResponse<String> asset = client.send(

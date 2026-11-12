@@ -518,7 +518,8 @@ public final class VercelLauncher {
             return;
         }
 
-        if ("/admin".equals(rawPath) || rawPath.startsWith("/admin/")) {
+        if ("/admin".equals(rawPath) || rawPath.startsWith("/admin/")
+                || "/student".equals(rawPath) || rawPath.startsWith("/student/")) {
             serveFile(exchange, portalDir.resolve("index.html"), false, "HEAD".equals(method));
             return;
         }
@@ -528,15 +529,15 @@ public final class VercelLauncher {
 
     private static byte[] injectPortalSwitcherBar(byte[] htmlBytes) {
         String html = new String(htmlBytes, StandardCharsets.UTF_8);
-        String bar = "<div id=\"mit-portal-switcher\" style=\"background:#17243A;color:#fff;padding:8px 16px;"
+        String bar = "<div id=\"qbank-portal-switcher\" style=\"background:#0F172A;color:#fff;padding:8px 16px;"
                 + "font-family:system-ui,-apple-system,sans-serif;font-size:12px;display:flex;flex-wrap:wrap;"
                 + "align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #334155;\">"
-                + "<span style=\"font-weight:600;color:#93C5FD;\">MIT Mysore Examination &amp; Admin Portal</span>"
+                + "<span style=\"font-weight:600;color:#93C5FD;\">QBank Unified Portal</span>"
                 + "<div style=\"display:flex;flex-wrap:wrap;gap:14px;align-items:center;\">"
-                + "<a href=\"/admin/login\" style=\"color:#fff;font-weight:600;text-decoration:underline;\">Admin Portal Sign In</a>"
-                + "<a href=\"/admin/hod/question-bank\" style=\"color:#CBD5E1;text-decoration:none;\">Question Bank (Excel Images)</a>"
-                + "<a href=\"/admin/hod/student-management\" style=\"color:#CBD5E1;text-decoration:none;\">Student Directory</a>"
-                + "<a href=\"/admin/student\" style=\"color:#A7F3D0;font-weight:600;text-decoration:underline;\">Student Directory Exam Login</a>"
+                + "<a href=\"/admin/login\" style=\"color:#fff;font-weight:600;text-decoration:underline;\">Admin, HOD, COE &amp; Invigilator Portal</a>"
+                + "<a href=\"/admin/student\" style=\"color:#A7F3D0;font-weight:600;text-decoration:underline;\">Student Exam Portal</a>"
+                + "<a href=\"/qbank/index.html\" style=\"color:#CBD5E1;text-decoration:none;\">Classic QBank Console</a>"
+                + "<a href=\"/qbank/student.html\" style=\"color:#CBD5E1;text-decoration:none;\">Classic Student View</a>"
                 + "</div></div>";
         int bodyIdx = html.toLowerCase(Locale.ROOT).indexOf("<body");
         if (bodyIdx >= 0) {

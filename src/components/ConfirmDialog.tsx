@@ -8,7 +8,7 @@ interface ConfirmDialogProps {
   consequenceNote?: string;
   confirmLabel: string;
   cancelLabel?: string;
-  variant?: 'primary' | 'destructive' | 'violet';
+  variant?: 'primary' | 'destructive';
   isLoading?: boolean;
   onConfirm: () => void;
   onCancel: () => void;
@@ -32,27 +32,25 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
 
   const btnStyle =
     variant === 'destructive'
-      ? 'bg-[#B42318] hover:bg-[#911B12] text-white'
-      : variant === 'violet'
-      ? 'bg-[#6D5CE8] hover:bg-[#5847D6] text-white'
-      : 'bg-[#2563EB] hover:bg-[#1D4ED8] text-white';
+      ? 'bg-red-700 hover:bg-red-800 text-white'
+      : 'bg-blue-600 hover:bg-blue-700 text-white';
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-[#17243A]/60 p-4"
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 p-4"
       role="dialog"
       aria-modal="true"
       aria-labelledby="dialog-title"
     >
-      <div className="w-full max-w-lg rounded-lg bg-white border border-[#D9E2EF] shadow-lg overflow-hidden">
-        <div className="flex items-center justify-between px-6 py-4 border-b border-[#D9E2EF] bg-[#F5F7FB]">
+      <div className="w-full max-w-lg rounded-lg bg-white border border-slate-200 shadow-lg overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 bg-slate-50">
           <div className="flex items-center gap-2.5">
             {variant === 'destructive' ? (
-              <AlertTriangle className="w-5 h-5 text-[#B42318] shrink-0" />
+              <AlertTriangle className="w-5 h-5 text-red-700 shrink-0" />
             ) : (
-              <ShieldCheck className="w-5 h-5 text-[#2563EB] shrink-0" />
+              <ShieldCheck className="w-5 h-5 text-blue-600 shrink-0" />
             )}
-            <h3 id="dialog-title" className="text-base font-bold text-[#17243A]">
+            <h3 id="dialog-title" className="text-base font-bold text-slate-900">
               {title}
             </h3>
           </div>
@@ -60,7 +58,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             type="button"
             onClick={onCancel}
             disabled={isLoading}
-            className="p-1 rounded-md text-[#64748B] hover:text-[#1F2937] hover:bg-slate-200/60 transition-colors"
+            className="p-1 rounded-md text-slate-500 hover:text-slate-900 hover:bg-slate-200/60 transition-colors"
             aria-label="Close dialog"
           >
             <X className="w-4 h-4" />
@@ -68,24 +66,24 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
         </div>
 
         <div className="p-6 space-y-4">
-          <p className="text-sm text-[#1F2937] leading-relaxed">{description}</p>
+          <p className="text-sm text-slate-800 leading-relaxed">{description}</p>
 
           {consequenceNote && (
-            <div className="p-3.5 rounded-md bg-[#F5F7FB] border border-[#D9E2EF] text-xs text-[#1F2937] space-y-1">
-              <div className="font-semibold text-[#17243A]">Institutional Consequence & Audit Rule:</div>
-              <div className="text-[#64748B] leading-relaxed">{consequenceNote}</div>
+            <div className="p-3.5 rounded-md bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
+              <div className="font-semibold text-slate-900">Action Note:</div>
+              <div className="text-slate-600 leading-relaxed">{consequenceNote}</div>
             </div>
           )}
 
           {children}
         </div>
 
-        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-[#D9E2EF] bg-[#F5F7FB]">
+        <div className="flex items-center justify-end gap-3 px-6 py-4 border-t border-slate-200 bg-slate-50">
           <button
             type="button"
             onClick={onCancel}
             disabled={isLoading}
-            className="px-4 py-2 text-xs font-semibold text-[#1F2937] bg-white border border-[#D9E2EF] rounded-md hover:bg-slate-100 transition-colors whitespace-nowrap shrink-0"
+            className="px-4 py-2 text-xs font-semibold text-slate-800 bg-white border border-slate-300 rounded-md hover:bg-slate-100 transition-colors"
           >
             {cancelLabel}
           </button>
@@ -93,7 +91,7 @@ export const ConfirmDialog: React.FC<ConfirmDialogProps> = ({
             type="button"
             onClick={onConfirm}
             disabled={isLoading}
-            className={`px-4 py-2 text-xs font-semibold rounded-md transition-colors whitespace-nowrap shrink-0 disabled:opacity-50 ${btnStyle}`}
+            className={`px-4 py-2 text-xs font-semibold rounded-md transition-colors disabled:opacity-50 ${btnStyle}`}
           >
             {isLoading ? 'Processing...' : confirmLabel}
           </button>
