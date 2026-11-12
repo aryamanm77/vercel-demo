@@ -29,6 +29,7 @@ import { StudentManagementPage } from './pages/hod/StudentManagementPage';
 import { SubmissionHistoryPage } from './pages/hod/SubmissionHistoryPage';
 import { HodExamStatusPage } from './pages/hod/HodExamStatusPage';
 import { DepartmentResultsPage } from './pages/hod/DepartmentResultsPage';
+import { StudentExamPage } from './pages/student/StudentExamPage';
 
 const RoleGuard: React.FC<{
   allowedRole: UserRole;
@@ -92,6 +93,7 @@ export default function App() {
           <Route path="/" element={<RootRedirect />} />
           <Route path="/admin" element={<RootRedirect />} />
           <Route path="/admin/login" element={<LoginPage />} />
+          <Route path="/admin/student" element={<StudentExamPage />} />
 
           {/* PART A: PRINCIPAL PORTAL ROUTES */}
           <Route

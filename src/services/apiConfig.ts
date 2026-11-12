@@ -1,8 +1,10 @@
 import { ApiResponse } from '../types';
 
+const env = (typeof import.meta !== 'undefined' && (import.meta as unknown as { env?: Record<string, string | undefined> }).env) || {};
+
 export const API_CONFIG = {
-  baseUrl: import.meta.env.VITE_API_BASE_URL || '/api/v1',
-  useMockAdapter: import.meta.env.VITE_USE_MOCK_ADAPTER !== 'false',
+  baseUrl: env.VITE_API_BASE_URL || '/api/v1',
+  useMockAdapter: env.VITE_USE_MOCK_ADAPTER !== 'false',
   SimulatedLatencyMs: 180,
 };
 

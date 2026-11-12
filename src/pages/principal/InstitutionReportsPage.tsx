@@ -13,7 +13,24 @@ import { resultsService } from '../../services/resultsService';
 import { analyticsService, DepartmentPerformanceAnalytics } from '../../services/analyticsService';
 import { questionBankService } from '../../services/questionBankService';
 import { auditService } from '../../services/auditService';
-import { StudentExamResult, SubmissionHistoryEntry } from '../../types';
+import {
+  assignExamVersionsForExam,
+  configureExamEligibility,
+  freezeExamEligibilitySnapshot,
+  getCoeStudentCounts,
+  getDirectorySettings,
+  updateDirectorySettings,
+} from '../../services/studentDirectoryPort';
+import { listCoeQuestionBankSummaries } from '../../services/questionImageExcelService';
+import { getMockDb } from '../../data/mockDatabase';
+import {
+  CoeQuestionBankSummary,
+  CoeStudentCountSummary,
+  ExamVersionAssignment,
+  StudentDirectorySettings,
+  StudentExamResult,
+  SubmissionHistoryEntry,
+} from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
 import { downloadCsvFile } from '../../utils/exportUtils';
 import { useAuth } from '../../hooks/useAuth';
@@ -41,6 +58,25 @@ export const InstitutionReportsPage: React.FC = () => {
   const [semFilter, setSemFilter] = useState<number>(0);
   const [subFilter, setSubFilter] = useState('ALL');
   const [cycleFilter, setCycleFilter] = useState('Odd Semester Internal Assessment – I (Nov 2026)');
+
+  // COE Directory Counts, Exam Eligibility & Directory Settings State
+  const [coeStudentCounts, setCoeStudentCounts] = useState<CoeStudentCountSummary[]>(() =>
+    getCoeStudentCounts(),
+  );
+  const [coeQbSummaries, setCoeQbSummaries] = useState<CoeQuestionBankSummary[]>(() =>
+    listCoeQuestionBankSummaries(),
+  );
+  const [dirSettings, setDirSettings] = useState<StudentDirectorySettings>(() =>
+    getDirectorySettings(),
+  );
+  const [selectedExamId, setSelectedExamId] = useState<string>(
+    () => getMockDb().examSchedules[0]?.id || '',
+  );
+  const [eligBranches, setEligBranches] = useState<string>('CSE');
+  const [eligSem, setEligSem] = useState<number>(5);
+  const [eligSections, setEligSections] = useState<string>('A,B');
+  const [assignedVersions, setAssignedVersions] = useState<ExamVersionAssignment[]>([]);
+  const [coeNotice, setCoeNotice] = useState<string | null>(null);
 
   useEffect(() => {
     setViewMode(searchParams.get('view') === 'analytics' ? 'analytics' : 'overview');
@@ -570,6 +606,299 @@ export const InstitutionReportsPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* COE Privacy-Safe Directory Counts, Question Bank Metadata, Exam Eligibility & A-D Versions */}
+      <div className="bg-white rounded-lg border border-[#D9E2EF] p-6 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-[#D9E2EF] pb-3">
+          <div>
+            <h2 className="text-base font-bold text-[#17243A]">
+              COE Aggregate Counts, Exam Eligibility & Paper Version Control
+            </h2>
+            <p className="text-xs text-[#64748B]">
+              COE view strictly displays branch/semester/section student counts and question bank module totals (no student DOB/personal details and no question texts/images).
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              setCoeStudentCounts(getCoeStudentCounts());
+              setCoeQbSummaries(listCoeQuestionBankSummaries());
+            }}
+            className="px-3 py-1.5 text-xs font-semibold border border-[#D9E2EF] rounded hover:bg-slate-50"
+          >
+            Refresh Counts
+          </button>
+        </div>
+
+        {coeNotice && (
+          <div className="p-3 bg-emerald-50 border border-emerald-200 rounded text-xs text-[#16834A] font-semibold">
+            {coeNotice}
+          </div>
+        )}
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+          {/* Student Counts Only */}
+          <div className="border border-[#D9E2EF] rounded-md overflow-hidden">
+            <div className="px-4 py-2.5 bg-[#F5F7FB] border-b border-[#D9E2EF] text-xs font-bold text-[#17243A]">
+              Student Directory Counts by Branch / Semester / Section
+            </div>
+            <table className="w-full text-left border-collapse text-xs">
+              <thead className="bg-slate-50 border-b border-[#D9E2EF] text-[#64748B]">
+                <tr>
+                  <th className="py-2 px-3">Branch</th>
+                  <th className="py-2 px-3">Sem</th>
+                  <th className="py-2 px-3">Sec</th>
+                  <th className="py-2 px-3 text-right">Active</th>
+                  <th className="py-2 px-3 text-right">Inactive</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#D9E2EF]">
+                {coeStudentCounts.map((c) => (
+                  <tr key={`${c.branchCode}-${c.semesterNumber}-${c.section}`}>
+                    <td className="py-2 px-3 font-mono font-bold">{c.branchCode}</td>
+                    <td className="py-2 px-3 font-mono">Sem {c.semesterNumber}</td>
+                    <td className="py-2 px-3 font-mono">{c.section}</td>
+                    <td className="py-2 px-3 text-right font-mono font-semibold text-[#16834A]">
+                      {c.activeCount}
+                    </td>
+                    <td className="py-2 px-3 text-right font-mono text-[#64748B]">
+                      {c.inactiveCount}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          {/* Question Bank Counts Only */}
+          <div className="border border-[#D9E2EF] rounded-md overflow-hidden">
+            <div className="px-4 py-2.5 bg-[#F5F7FB] border-b border-[#D9E2EF] text-xs font-bold text-[#17243A]">
+              Question Bank Readiness Counts (Zero Questions / Images Exposed)
+            </div>
+            <table className="w-full text-left border-collapse text-xs">
+              <thead className="bg-slate-50 border-b border-[#D9E2EF] text-[#64748B]">
+                <tr>
+                  <th className="py-2 px-3">Dept</th>
+                  <th className="py-2 px-3">Subject</th>
+                  <th className="py-2 px-3">Status</th>
+                  <th className="py-2 px-3 text-right">Total MCQs</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#D9E2EF]">
+                {coeQbSummaries.map((qb) => (
+                  <tr key={qb.bankId}>
+                    <td className="py-2 px-3 font-mono font-bold">{qb.departmentCode}</td>
+                    <td className="py-2 px-3">
+                      {qb.subjectCode} ({qb.revision})
+                    </td>
+                    <td className="py-2 px-3">{qb.status}</td>
+                    <td className="py-2 px-3 text-right font-mono font-bold">{qb.totalQuestions}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        {/* Exam Eligibility + Freeze + Deterministic A-D Assignment */}
+        <div className="p-4 bg-[#F5F7FB] border border-[#D9E2EF] rounded-md space-y-3">
+          <div className="text-xs font-bold text-[#17243A]">
+            Exam Eligibility & Deterministic Neighbor-Safe Version Assignment (A–D)
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs">
+            <select
+              value={selectedExamId}
+              onChange={(e) => setSelectedExamId(e.target.value)}
+              className="px-2.5 py-2 border border-[#D9E2EF] rounded bg-white"
+            >
+              {getMockDb().examSchedules.map((ex) => (
+                <option key={ex.id} value={ex.id}>
+                  {ex.subjectCode} · {ex.departmentCode} Sem {ex.semesterNumber}
+                </option>
+              ))}
+            </select>
+            <input
+              type="text"
+              value={eligBranches}
+              onChange={(e) => setEligBranches(e.target.value)}
+              placeholder="Branches (e.g. CSE,ISE)"
+              className="px-2.5 py-2 border border-[#D9E2EF] rounded bg-white font-mono"
+            />
+            <input
+              type="number"
+              value={eligSem}
+              onChange={(e) => setEligSem(Number(e.target.value) || 5)}
+              placeholder="Semester"
+              className="px-2.5 py-2 border border-[#D9E2EF] rounded bg-white font-mono"
+            />
+            <input
+              type="text"
+              value={eligSections}
+              onChange={(e) => setEligSections(e.target.value)}
+              placeholder="Sections (e.g. A,B)"
+              className="px-2.5 py-2 border border-[#D9E2EF] rounded bg-white font-mono"
+            />
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                if (!user || !selectedExamId) return;
+                const cfg = configureExamEligibility({
+                  examId: selectedExamId,
+                  allowedBranches: eligBranches.split(',').map((s) => s.trim()).filter(Boolean),
+                  semesterNumber: eligSem,
+                  allowedSections: eligSections.split(',').map((s) => s.trim()).filter(Boolean),
+                  actor: {
+                    role: 'COE',
+                    actorName: user.fullName,
+                    actorEmployeeId: user.employeeId,
+                  },
+                });
+                setCoeNotice(`Saved eligibility for Exam ${cfg.examId}.`);
+              }}
+              className="px-3 py-1.5 text-xs font-semibold bg-white border border-[#D9E2EF] hover:bg-slate-100 rounded"
+            >
+              Save Eligibility
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!user || !selectedExamId) return;
+                const cfg = freezeExamEligibilitySnapshot({
+                  examId: selectedExamId,
+                  actor: {
+                    role: 'COE',
+                    actorName: user.fullName,
+                    actorEmployeeId: user.employeeId,
+                  },
+                });
+                setCoeNotice(
+                  `Froze eligible snapshot for Exam ${cfg.examId} (${cfg.eligibleUsnsSnapshot.length} ACTIVE students).`,
+                );
+              }}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-[#2563EB] hover:bg-[#1D4ED8] rounded"
+            >
+              Freeze Eligible Snapshot
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                if (!user || !selectedExamId) return;
+                const res = assignExamVersionsForExam({
+                  examId: selectedExamId,
+                  actor: {
+                    role: 'COE',
+                    actorName: user.fullName,
+                    actorEmployeeId: user.employeeId,
+                  },
+                });
+                setAssignedVersions(res);
+                setCoeNotice(`Assigned deterministic A–D paper versions for ${res.length} students.`);
+              }}
+              className="px-3 py-1.5 text-xs font-semibold text-white bg-[#16834A] hover:bg-[#136C3B] rounded"
+            >
+              Assign Deterministic A–D Versions
+            </button>
+          </div>
+          {assignedVersions.length > 0 && (
+            <div className="max-h-40 overflow-y-auto border border-[#D9E2EF] rounded bg-white p-2 text-[11px] font-mono">
+              {assignedVersions.map((a) => (
+                <div key={a.usn} className="flex justify-between py-0.5 border-b border-slate-100">
+                  <span>
+                    Seat #{a.seatOrder} · {a.usn} ({a.roomCode})
+                  </span>
+                  <strong className="text-[#2563EB]">Version {a.assignedVersion}</strong>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Admin Directory Validation & Session Code Settings */}
+        <div className="p-4 bg-[#F5F7FB] border border-[#D9E2EF] rounded-md space-y-3 text-xs">
+          <div className="font-bold text-[#17243A]">
+            Directory & Student Login Configuration (Admin)
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-[#64748B] mb-1">
+                USN Validation Regex
+              </label>
+              <input
+                type="text"
+                value={dirSettings.usnRegex}
+                onChange={(e) => setDirSettings({ ...dirSettings, usnRegex: e.target.value })}
+                className="w-full px-2.5 py-1.5 border border-[#D9E2EF] rounded bg-white font-mono"
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] font-semibold text-[#64748B] mb-1">
+                Session Access Code
+              </label>
+              <input
+                type="text"
+                value={dirSettings.sessionAccessCode}
+                onChange={(e) =>
+                  setDirSettings({ ...dirSettings, sessionAccessCode: e.target.value })
+                }
+                className="w-full px-2.5 py-1.5 border border-[#D9E2EF] rounded bg-white font-mono"
+              />
+            </div>
+            <div className="flex flex-col justify-end gap-1.5">
+              <label className="inline-flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={dirSettings.usnStrictMode}
+                  onChange={(e) =>
+                    setDirSettings({ ...dirSettings, usnStrictMode: e.target.checked })
+                  }
+                />
+                <span>Strict USN Mode (Error instead of Warning)</span>
+              </label>
+              <label className="inline-flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={dirSettings.dobDayFirst}
+                  onChange={(e) =>
+                    setDirSettings({ ...dirSettings, dobDayFirst: e.target.checked })
+                  }
+                />
+                <span>DOB Day-First (DD/MM/YYYY) Default</span>
+              </label>
+              <label className="inline-flex items-center gap-2 font-medium">
+                <input
+                  type="checkbox"
+                  checked={dirSettings.sessionAccessCodeEnabled}
+                  onChange={(e) =>
+                    setDirSettings({
+                      ...dirSettings,
+                      sessionAccessCodeEnabled: e.target.checked,
+                    })
+                  }
+                />
+                <span>Require Per-Session Code on Student Login</span>
+              </label>
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              if (!user) return;
+              const saved = updateDirectorySettings(dirSettings, {
+                role: 'PRINCIPAL',
+                actorName: user.fullName,
+                actorEmployeeId: user.employeeId,
+              });
+              setDirSettings(saved);
+              setCoeNotice('Saved global Student Directory & Session Code settings.');
+            }}
+            className="px-3 py-1.5 text-xs font-semibold text-white bg-[#17243A] hover:bg-slate-800 rounded"
+          >
+            Save Directory Settings
+          </button>
+        </div>
+      </div>
     </div>
   );
 };

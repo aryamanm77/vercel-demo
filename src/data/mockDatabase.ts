@@ -4,13 +4,18 @@ import {
   AuthUser,
   Department,
   DifficultyLevel,
+  ExamEligibilityConfig,
+  ExamVersionAssignment,
   ExaminationScheduleItem,
   MCQQuestion,
   QuestionBankRecord,
   SectionRecord,
   Semester,
   StaffAccount,
+  StudentDirectoryRecord,
+  StudentDirectorySettings,
   StudentExamResult,
+  StudentLoginAuditState,
   StudentRecord,
   StudentRosterSubmission,
   Subject,
@@ -33,6 +38,16 @@ export interface MockDatabaseSchema {
   examSchedules: ExaminationScheduleItem[];
   examResults: StudentExamResult[];
   auditLogs: AuditLogEntry[];
+  // Strictly additive Student Directory Add-On state
+  studentDirectory?: StudentDirectoryRecord[];
+  directorySettings?: StudentDirectorySettings;
+  examEligibilityConfigs?: ExamEligibilityConfig[];
+  examVersionAssignments?: Record<string, ExamVersionAssignment[]>;
+  rawUploadAuditArtifacts?: Record<
+    string,
+    { id: string; fileName: string; uploadedAt: string; uploadedBy: string; base64: string }
+  >;
+  studentLoginAuditState?: StudentLoginAuditState;
 }
 
 const TOPIC_MAP: Record<string, Record<number, string[]>> = {
@@ -1171,25 +1186,122 @@ function buildInitialDatabase(): MockDatabaseSchema {
   };
 }
 
+export const DEFAULT_DIRECTORY_SETTINGS: StudentDirectorySettings = {
+  branchAliases: {
+    cs: 'CSE',
+    cse: 'CSE',
+    'computer science': 'CSE',
+    'computer science and engineering': 'CSE',
+    is: 'ISE',
+    ise: 'ISE',
+    'information science': 'ISE',
+    'information science and engineering': 'ISE',
+    ec: 'ECE',
+    ece: 'ECE',
+    'electronics and communication': 'ECE',
+    'electronics and communication engineering': 'ECE',
+    me: 'ME',
+    mech: 'ME',
+    mechanical: 'ME',
+    'mechanical engineering': 'ME',
+    cv: 'CV',
+    civil: 'CV',
+    'civil engineering': 'CV',
+    ai: 'AIML',
+    aiml: 'AIML',
+    'ai & ml': 'AIML',
+    'artificial intelligence and machine learning': 'AIML',
+  },
+  usnRegex: '^[0-9][A-Za-z]{2}[0-9]{2}[A-Za-z]{2,4}[0-9]{3}$',
+  usnStrictMode: false,
+  dobDayFirst: true,
+  sessionAccessCodeEnabled: true,
+  sessionAccessCode: 'MITM2026',
+  maxLoginAttemptsPerUsn: 5,
+  maxLoginAttemptsPerClient: 10,
+  lockoutDurationMs: 15 * 60 * 1000,
+  tokenTtlMs: 2 * 60 * 60 * 1000,
+};
+
+export function ensureDirectoryState(db: MockDatabaseSchema): void {
+  if (!db.directorySettings) {
+    db.directorySettings = {
+      ...DEFAULT_DIRECTORY_SETTINGS,
+      branchAliases: { ...DEFAULT_DIRECTORY_SETTINGS.branchAliases },
+    };
+  }
+  if (!db.studentDirectory) {
+    const byUsn = new Map<string, StudentDirectoryRecord>();
+    const now = new Date().toISOString();
+    for (const roster of db.studentRosters) {
+      for (const s of roster.students) {
+        const cleanUsn = s.usn.trim().toUpperCase();
+        if (!cleanUsn || !s.isValid) continue;
+        byUsn.set(cleanUsn, {
+          id: s.id,
+          usn: cleanUsn,
+          studentName: s.studentName.trim(),
+          dob: s.dob.trim(),
+          departmentId: s.departmentId,
+          branchCode: s.departmentCode.trim().toUpperCase(),
+          semesterNumber: s.semesterNumber,
+          section: s.section.trim().toUpperCase().replace(/^SECTION\s+/i, '') || 'A',
+          status: s.status || 'ACTIVE',
+          attributes: s.attributes ? { ...s.attributes } : {},
+          semesterHistory: s.semesterHistory ? [...s.semesterHistory] : [],
+          createdAt: now,
+          updatedAt: s.updatedAt || now,
+        });
+      }
+    }
+    db.studentDirectory = Array.from(byUsn.values());
+  }
+  if (!db.examEligibilityConfigs) {
+    db.examEligibilityConfigs = db.examSchedules.map((ex) => ({
+      examId: ex.id,
+      allowedBranches: [ex.departmentCode.toUpperCase()],
+      semesterNumber: ex.semesterNumber,
+      allowedSections: [ex.section.trim().toUpperCase().replace(/^SECTION\s+/i, '')],
+      isFrozen: false,
+      eligibleUsnsSnapshot: [],
+    }));
+  }
+  if (!db.examVersionAssignments) db.examVersionAssignments = {};
+  if (!db.rawUploadAuditArtifacts) db.rawUploadAuditArtifacts = {};
+  if (!db.studentLoginAuditState) {
+    db.studentLoginAuditState = {
+      activeTokensByUsn: {},
+      failedAttemptsByUsn: {},
+      failedAttemptsByClient: {},
+    };
+  }
+}
+
 let memoryDb: MockDatabaseSchema | null = null;
 
 export function getMockDb(): MockDatabaseSchema {
-  if (memoryDb) return memoryDb;
+  if (memoryDb) {
+    ensureDirectoryState(memoryDb);
+    return memoryDb;
+  }
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) {
       memoryDb = JSON.parse(raw) as MockDatabaseSchema;
+      ensureDirectoryState(memoryDb);
       return memoryDb;
     }
   } catch {
     // Fallback to initial db
   }
   memoryDb = buildInitialDatabase();
+  ensureDirectoryState(memoryDb);
   saveMockDb(memoryDb);
   return memoryDb;
 }
 
 export function saveMockDb(db: MockDatabaseSchema): void {
+  ensureDirectoryState(db);
   memoryDb = db;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
@@ -1200,6 +1312,7 @@ export function saveMockDb(db: MockDatabaseSchema): void {
 
 export function resetMockDb(): MockDatabaseSchema {
   memoryDb = buildInitialDatabase();
+  ensureDirectoryState(memoryDb);
   saveMockDb(memoryDb);
   return memoryDb;
 }

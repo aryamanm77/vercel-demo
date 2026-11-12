@@ -262,6 +262,13 @@ export const questionBankService = {
         existing.optionD = questionPayload.optionD.trim();
         existing.correctOption = questionPayload.correctOption;
         existing.difficulty = questionPayload.difficulty;
+        if (questionPayload.imageId !== undefined) {
+          if (questionPayload.imageId === null) {
+            delete existing.imageId;
+          } else {
+            existing.imageId = questionPayload.imageId;
+          }
+        }
         existing.updatedAt = new Date().toISOString();
       } else {
         if (modQuestions.length >= 60) {
@@ -282,6 +289,7 @@ export const questionBankService = {
           correctOption: questionPayload.correctOption,
           difficulty: questionPayload.difficulty,
           updatedAt: new Date().toISOString(),
+          ...(questionPayload.imageId ? { imageId: questionPayload.imageId } : {}),
         };
         bank.questions.push(newQ);
       }

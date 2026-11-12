@@ -22,3 +22,16 @@ export function downloadCsvFile(filename: string, headers: string[], rows: (stri
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 }
+
+export function downloadBinaryFile(filename: string, bytes: Uint8Array, mimeType: string): void {
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.setAttribute('download', filename);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+}

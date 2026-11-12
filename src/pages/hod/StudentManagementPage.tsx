@@ -15,14 +15,34 @@ import {
   Send,
   ShieldAlert,
   Trash2,
+  UserCheck,
+  UserX,
+  RefreshCw,
   X,
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 import { studentService } from '../../services/studentService';
-import { StudentRecord, StudentRosterSubmission } from '../../types';
+import {
+  buildCorrectedStudentExcelBytes,
+  confirmStudentUpload,
+  generateStudentTemplateXlsx,
+  previewStudentUpload,
+  updateStudentPreviewRow,
+} from '../../services/studentUploadService';
+import {
+  setStudentActiveStatus,
+  studentDirectoryPort,
+} from '../../services/studentDirectoryPort';
+import { resetStudentLoginSession } from '../../services/studentExamAuthService';
+import {
+  PublicStudentDirectoryRecord,
+  StudentRecord,
+  StudentRosterSubmission,
+  StudentUploadPreviewSession,
+} from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { downloadCsvFile } from '../../utils/exportUtils';
+import { downloadBinaryFile, downloadCsvFile } from '../../utils/exportUtils';
 
 export const StudentManagementPage: React.FC = () => {
   const { user } = useAuth();
@@ -62,6 +82,35 @@ export const StudentManagementPage: React.FC = () => {
   const [correctionModalOpen, setCorrectionModalOpen] = useState(false);
   const [correctionReason, setCorrectionReason] = useState('');
 
+  // Student Directory Add-On Two-Step Upload & Directory State
+  const directoryInputRef = useRef<HTMLInputElement | null>(null);
+  const [dirPreview, setDirPreview] = useState<StudentUploadPreviewSession | null>(null);
+  const [lastConfirmedPreviewId, setLastConfirmedPreviewId] = useState<string | null>(null);
+  const [directoryRecords, setDirectoryRecords] = useState<PublicStudentDirectoryRecord[]>([]);
+  const [directoryTab, setDirectoryTab] = useState<'roster' | 'directory'>('roster');
+
+  const refreshDirectory = () => {
+    if (!user) return;
+    try {
+      const res = studentDirectoryPort.search(
+        {
+          branch: user.role === 'HOD' ? user.departmentCode : undefined,
+          page: 1,
+          pageSize: 200,
+        },
+        {
+          role: user.role,
+          branchCode: user.departmentCode,
+          actorName: user.fullName,
+          actorEmployeeId: user.employeeId,
+        },
+      );
+      setDirectoryRecords(res.items);
+    } catch {
+      setDirectoryRecords([]);
+    }
+  };
+
   const loadRoster = async () => {
     if (!user?.departmentId) return;
     setLoading(true);
@@ -73,6 +122,7 @@ export const StudentManagementPage: React.FC = () => {
         section,
       });
       setRoster(res.data);
+      refreshDirectory();
     } catch (err) {
       setFeedback({
         type: 'error',
@@ -245,6 +295,111 @@ export const StudentManagementPage: React.FC = () => {
     );
   };
 
+  const handleDownloadDirectoryTemplateXlsx = () => {
+    downloadBinaryFile(
+      `Student_Directory_Template_${user?.departmentCode || 'BRANCH'}.xlsx`,
+      generateStudentTemplateXlsx(),
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+  };
+
+  const handleDirectoryXlsxUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !user) return;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const session = previewStudentUpload({
+        fileName: file.name,
+        bytes,
+        actor: {
+          role: user.role,
+          branchCode: user.departmentCode,
+          actorName: user.fullName,
+          actorEmployeeId: user.employeeId,
+        },
+      });
+      setDirPreview(session);
+      setLastConfirmedPreviewId(null);
+      setFeedback({
+        type: 'success',
+        message: `Preview ready for "${file.name}": ${session.counts.newCount} New, ${session.counts.updatedCount} Updated, ${session.counts.unchangedCount} Unchanged, ${session.counts.conflictCount} Conflict, ${session.counts.errorCount} Errors.`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to parse student Excel file.',
+      });
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmDirectoryUpload = () => {
+    if (!dirPreview || !user) return;
+    try {
+      const result = confirmStudentUpload({
+        previewId: dirPreview.previewId,
+        actor: {
+          role: user.role,
+          branchCode: user.departmentCode,
+          actorName: user.fullName,
+          actorEmployeeId: user.employeeId,
+        },
+      });
+      setLastConfirmedPreviewId(dirPreview.previewId);
+      setDirPreview(null);
+      refreshDirectory();
+      setDirectoryTab('directory');
+      setFeedback({
+        type: 'success',
+        message: `Directory upsert complete: ${result.addedCount} added, ${result.updatedCount} updated, ${result.unchangedCount} unchanged (${result.skippedErrorCount} skipped).`,
+      });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Confirm directory upload failed.',
+      });
+    }
+  };
+
+  const handleToggleDirectoryStatus = (usn: string, currentStatus: 'ACTIVE' | 'INACTIVE') => {
+    if (!user) return;
+    try {
+      const next = currentStatus === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+      setStudentActiveStatus({
+        usn,
+        status: next,
+        actor: {
+          role: user.role,
+          branchCode: user.departmentCode,
+          actorName: user.fullName,
+          actorEmployeeId: user.employeeId,
+        },
+      });
+      refreshDirectory();
+      setFeedback({ type: 'success', message: `Student ${usn} marked ${next}.` });
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Status update failed.',
+      });
+    }
+  };
+
+  const handleResetStudentSession = (usn: string) => {
+    if (!user) return;
+    resetStudentLoginSession({
+      usn,
+      actor: {
+        role: user.role,
+        branchCode: user.departmentCode,
+        actorName: user.fullName,
+        actorEmployeeId: user.employeeId,
+      },
+    });
+    setFeedback({ type: 'success', message: `Reset active exam session & lockout for ${usn}.` });
+  };
+
   const handleConfirmSubmitRoster = async () => {
     if (!roster || !user?.departmentId) return;
     setSubmitting(true);
@@ -340,6 +495,48 @@ export const StudentManagementPage: React.FC = () => {
             <span>Roster CSV Template</span>
           </button>
 
+          <button
+            type="button"
+            onClick={handleDownloadDirectoryTemplateXlsx}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1F2937] bg-white border border-[#D9E2EF] hover:bg-slate-100 rounded-md cursor-pointer"
+          >
+            <Download className="w-3.5 h-3.5 text-[#2563EB]" />
+            <span>Directory .xlsx Template</span>
+          </button>
+
+          <input
+            ref={directoryInputRef}
+            type="file"
+            accept=".xlsx,.csv,.tsv"
+            onChange={handleDirectoryXlsxUpload}
+            className="hidden"
+          />
+          <button
+            type="button"
+            onClick={() => directoryInputRef.current?.click()}
+            className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#17243A] bg-white border border-[#2563EB]/40 hover:bg-blue-50 rounded-md cursor-pointer"
+          >
+            <FileSpreadsheet className="w-3.5 h-3.5 text-[#2563EB]" />
+            <span>Directory .xlsx Upload (2-Step)</span>
+          </button>
+
+          {lastConfirmedPreviewId && (
+            <button
+              type="button"
+              onClick={() =>
+                downloadBinaryFile(
+                  `Corrected_Students_${user?.departmentCode || 'DIR'}.xlsx`,
+                  buildCorrectedStudentExcelBytes(lastConfirmedPreviewId),
+                  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                )
+              }
+              className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#16834A] bg-emerald-50 border border-[#16834A]/30 hover:bg-emerald-100 rounded-md cursor-pointer"
+            >
+              <Download className="w-3.5 h-3.5" />
+              <span>Corrected .xlsx</span>
+            </button>
+          )}
+
           {!isFrozen ? (
             <>
               <input
@@ -378,6 +575,141 @@ export const StudentManagementPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Mode Switcher: Existing Section Roster vs Branch Student Directory Registry */}
+      <div className="inline-flex p-1 bg-[#F5F7FB] border border-[#D9E2EF] rounded-md gap-1">
+        <button
+          type="button"
+          onClick={() => setDirectoryTab('roster')}
+          className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+            directoryTab === 'roster' ? 'bg-[#17243A] text-white' : 'text-[#64748B] hover:text-[#17243A]'
+          }`}
+        >
+          Section Roster Management
+        </button>
+        <button
+          type="button"
+          onClick={() => {
+            refreshDirectory();
+            setDirectoryTab('directory');
+          }}
+          className={`px-3 py-1.5 text-xs font-semibold rounded transition-colors ${
+            directoryTab === 'directory' ? 'bg-[#17243A] text-white' : 'text-[#64748B] hover:text-[#17243A]'
+          }`}
+        >
+          Branch Student Directory ({directoryRecords.length})
+        </button>
+      </div>
+
+      {directoryTab === 'directory' && (
+        <div className="bg-white rounded-lg border border-[#D9E2EF] overflow-hidden">
+          <div className="px-6 py-4 border-b border-[#D9E2EF] flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <h2 className="text-base font-bold text-[#17243A]">
+                {user?.departmentCode} Student Directory Registry
+              </h2>
+              <p className="text-xs text-[#64748B]">
+                Upserted students with ACTIVE/INACTIVE lifecycle, preserved extra attributes, and semester history (DOB hidden for privacy).
+              </p>
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-[520px]">
+            <table className="w-full text-left border-collapse text-xs">
+              <thead className="sticky top-0 bg-[#F5F7FB] border-b border-[#D9E2EF] text-[#64748B]">
+                <tr>
+                  <th className="py-3 px-4">USN</th>
+                  <th className="py-3 px-4">Name</th>
+                  <th className="py-3 px-3">Branch</th>
+                  <th className="py-3 px-3">Sem / Sec</th>
+                  <th className="py-3 px-3">Status</th>
+                  <th className="py-3 px-4">Extra Attributes & Semester History</th>
+                  <th className="py-3 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#D9E2EF]">
+                {directoryRecords.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="py-8 text-center text-[#64748B]">
+                      No students in {user?.departmentCode} directory yet. Use "Directory .xlsx Upload (2-Step)".
+                    </td>
+                  </tr>
+                ) : (
+                  directoryRecords.map((rec) => (
+                    <tr key={rec.usn} className="hover:bg-[#F5F7FB]/60">
+                      <td className="py-3 px-4 font-mono font-bold text-[#17243A]">{rec.usn}</td>
+                      <td className="py-3 px-4 font-medium text-[#1F2937]">{rec.studentName}</td>
+                      <td className="py-3 px-3 font-mono">{rec.branchCode}</td>
+                      <td className="py-3 px-3 font-mono">
+                        Sem {rec.semesterNumber} · Sec {rec.section}
+                      </td>
+                      <td className="py-3 px-3">
+                        <span
+                          className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${
+                            rec.status === 'ACTIVE'
+                              ? 'bg-emerald-50 text-[#16834A] border border-emerald-200'
+                              : 'bg-slate-100 text-[#64748B] border border-slate-200'
+                          }`}
+                        >
+                          {rec.status}
+                        </span>
+                      </td>
+                      <td className="py-3 px-4 text-[11px] text-[#64748B] space-y-0.5">
+                        {Object.keys(rec.attributes).length > 0 && (
+                          <div>
+                            {Object.entries(rec.attributes)
+                              .map(([k, v]) => `${k}: ${v}`)
+                              .join(' · ')}
+                          </div>
+                        )}
+                        {rec.semesterHistory.length > 0 && (
+                          <div className="font-mono text-[10px]">
+                            Sem History:{' '}
+                            {rec.semesterHistory
+                              .map((h) => `${h.fromSemester ?? 'Init'}→${h.toSemester}`)
+                              .join(', ')}
+                          </div>
+                        )}
+                      </td>
+                      <td className="py-3 px-4 text-right whitespace-nowrap space-x-2">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleDirectoryStatus(rec.usn, rec.status)}
+                          className={`inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold border ${
+                            rec.status === 'ACTIVE'
+                              ? 'text-[#B42318] border-[#B42318]/30 hover:bg-red-50'
+                              : 'text-[#16834A] border-[#16834A]/30 hover:bg-emerald-50'
+                          }`}
+                        >
+                          {rec.status === 'ACTIVE' ? (
+                            <>
+                              <UserX className="w-3 h-3" />
+                              <span>Deactivate</span>
+                            </>
+                          ) : (
+                            <>
+                              <UserCheck className="w-3 h-3" />
+                              <span>Reactivate</span>
+                            </>
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleResetStudentSession(rec.usn)}
+                          className="inline-flex items-center gap-1 px-2.5 py-1 rounded text-[11px] font-semibold text-[#2563EB] border border-[#2563EB]/30 hover:bg-blue-50"
+                          title="Invigilator Session Reset"
+                        >
+                          <RefreshCw className="w-3 h-3" />
+                          <span>Reset Login</span>
+                        </button>
+                      </td>
+                    </tr>
+                  ))
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
 
       {/* Selection Bar: Academic Year, Semester, Section (Department Locked) */}
       <div className="bg-white rounded-lg border border-[#D9E2EF] p-5 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
@@ -817,6 +1149,294 @@ export const StudentManagementPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Two-Step Student Directory Excel Preview & Confirm Modal */}
+      {dirPreview && user && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#17243A]/60 p-4">
+          <div className="w-full max-w-6xl max-h-[90vh] flex flex-col bg-white rounded-lg border border-[#D9E2EF] shadow-lg overflow-hidden">
+            <div className="px-6 py-4 bg-[#F5F7FB] border-b border-[#D9E2EF] flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-[#17243A]">
+                  Student Directory Two-Step Preview — {dirPreview.fileName}
+                </h3>
+                <div className="flex flex-wrap gap-2 mt-1 text-[11px] font-semibold">
+                  <span className="px-2 py-0.5 rounded bg-emerald-50 text-[#16834A]">
+                    New: {dirPreview.counts.newCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-blue-50 text-[#2563EB]">
+                    Updated: {dirPreview.counts.updatedCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-slate-100 text-[#64748B]">
+                    Unchanged: {dirPreview.counts.unchangedCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-amber-50 text-[#B7791F]">
+                    Conflict: {dirPreview.counts.conflictCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-red-50 text-[#B42318]">
+                    Errors: {dirPreview.counts.errorCount}
+                  </span>
+                  <span className="px-2 py-0.5 rounded bg-yellow-50 text-[#92400E]">
+                    Warnings: {dirPreview.counts.warningCount}
+                  </span>
+                </div>
+              </div>
+              <button type="button" onClick={() => setDirPreview(null)}>
+                <X className="w-4 h-4 text-[#64748B]" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto flex-1 space-y-3">
+              {dirPreview.extraColumns.length > 0 && (
+                <div className="text-xs text-[#64748B] bg-[#F5F7FB] px-3 py-2 rounded border border-[#D9E2EF]">
+                  Extra columns preserved as attributes:{' '}
+                  <strong>{dirPreview.extraColumns.join(', ')}</strong>
+                </div>
+              )}
+
+              <div className="border border-[#D9E2EF] rounded-md overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead className="bg-[#F5F7FB] border-b border-[#D9E2EF] text-[#64748B]">
+                    <tr>
+                      <th className="py-2.5 px-3">Row</th>
+                      <th className="py-2.5 px-3">Disposition</th>
+                      <th className="py-2.5 px-3">USN</th>
+                      <th className="py-2.5 px-3">Name</th>
+                      <th className="py-2.5 px-3">DOB</th>
+                      <th className="py-2.5 px-3">Branch</th>
+                      <th className="py-2.5 px-3">Sem</th>
+                      <th className="py-2.5 px-3">Sec</th>
+                      <th className="py-2.5 px-3">Issues / Warnings</th>
+                      <th className="py-2.5 px-3 text-right">Exclude</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#D9E2EF]">
+                    {dirPreview.rows.map((r) => (
+                      <tr key={r.rowNumber} className={r.excluded ? 'opacity-45 bg-slate-50' : ''}>
+                        <td className="py-2 px-3 font-mono font-bold">#{r.rowNumber}</td>
+                        <td className="py-2 px-3">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              r.disposition === 'NEW'
+                                ? 'bg-emerald-50 text-[#16834A]'
+                                : r.disposition === 'UPDATED'
+                                  ? 'bg-blue-50 text-[#2563EB]'
+                                  : r.disposition === 'UNCHANGED'
+                                    ? 'bg-slate-100 text-[#64748B]'
+                                    : r.disposition === 'EXCLUDED'
+                                      ? 'bg-slate-200 text-[#64748B]'
+                                      : 'bg-red-50 text-[#B42318]'
+                            }`}
+                          >
+                            {r.disposition}
+                          </span>
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="text"
+                            value={r.usn}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { usn: e.target.value },
+                                }),
+                              )
+                            }
+                            className="w-28 px-2 py-1 border border-[#D9E2EF] rounded font-mono text-xs"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="text"
+                            value={r.studentName}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { studentName: e.target.value },
+                                }),
+                              )
+                            }
+                            className="w-36 px-2 py-1 border border-[#D9E2EF] rounded text-xs"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="text"
+                            value={r.dob}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { dob: e.target.value },
+                                }),
+                              )
+                            }
+                            className="w-24 px-2 py-1 border border-[#D9E2EF] rounded font-mono text-xs"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="text"
+                            value={r.branchRaw || r.branchCode}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { branchRaw: e.target.value },
+                                }),
+                              )
+                            }
+                            className="w-16 px-2 py-1 border border-[#D9E2EF] rounded font-mono text-xs"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="number"
+                            value={r.semesterNumber ?? ''}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { semesterNumber: Number(e.target.value) || null },
+                                }),
+                              )
+                            }
+                            className="w-14 px-2 py-1 border border-[#D9E2EF] rounded font-mono text-xs"
+                          />
+                        </td>
+                        <td className="py-2 px-2">
+                          <input
+                            type="text"
+                            value={r.section}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { section: e.target.value },
+                                }),
+                              )
+                            }
+                            className="w-12 px-2 py-1 border border-[#D9E2EF] rounded font-mono text-xs"
+                          />
+                        </td>
+                        <td className="py-2 px-3 space-y-0.5 max-w-xs">
+                          {r.issues.map((iss, iIdx) => (
+                            <div
+                              key={iIdx}
+                              className={`text-[10px] ${
+                                iss.severity === 'ERROR' ? 'text-[#B42318] font-semibold' : 'text-[#92400E]'
+                              }`}
+                            >
+                              [{iss.severity}] {iss.message}
+                            </div>
+                          ))}
+                        </td>
+                        <td className="py-2 px-3 text-right">
+                          <input
+                            type="checkbox"
+                            checked={r.excluded}
+                            onChange={(e) =>
+                              setDirPreview(
+                                updateStudentPreviewRow({
+                                  previewId: dirPreview.previewId,
+                                  rowNumber: r.rowNumber,
+                                  actor: {
+                                    role: user.role,
+                                    branchCode: user.departmentCode,
+                                    actorName: user.fullName,
+                                    actorEmployeeId: user.employeeId,
+                                  },
+                                  patch: { excluded: e.target.checked },
+                                }),
+                              )
+                            }
+                          />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-[#F5F7FB] border-t border-[#D9E2EF] flex items-center justify-between">
+              <button
+                type="button"
+                onClick={() =>
+                  downloadBinaryFile(
+                    `Corrected_${dirPreview.fileName.replace(/\.[^.]+$/, '')}.xlsx`,
+                    buildCorrectedStudentExcelBytes(dirPreview.previewId),
+                    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                  )
+                }
+                className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold border border-[#D9E2EF] rounded bg-white hover:bg-slate-100"
+              >
+                <Download className="w-3.5 h-3.5" />
+                <span>Download Corrected .xlsx</span>
+              </button>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setDirPreview(null)}
+                  className="px-4 py-2 text-xs font-semibold border border-[#D9E2EF] rounded-md bg-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={handleConfirmDirectoryUpload}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#16834A] hover:bg-[#136C3B] rounded-md"
+                >
+                  Confirm & Upsert to Directory
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}

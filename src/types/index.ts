@@ -145,6 +145,7 @@ export interface MCQQuestion {
   correctOption: 'A' | 'B' | 'C' | 'D' | '';
   difficulty: DifficultyLevel;
   updatedAt: string;
+  imageId?: string | null;
 }
 
 export interface QuestionBankValidationIssue {
@@ -152,6 +153,94 @@ export interface QuestionBankValidationIssue {
   moduleNumber: number;
   type: 'MISSING_FIELD' | 'DUPLICATE_TEXT' | 'MISSING_ANSWER' | 'INVALID_OPTIONS' | 'DIFFICULTY_MISMATCH';
   message: string;
+}
+
+export interface QuestionImportIssue {
+  rowNumber: number; // 1-based Excel row (0 if workbook-level)
+  severity: 'ERROR' | 'WARNING';
+  code:
+    | 'HEADER_IMAGE_IGNORED'
+    | 'OUTSIDE_ROW_IMAGE_IGNORED'
+    | 'MULTIPLE_IMAGES_ON_ROW'
+    | 'UNREADABLE_IMAGE'
+    | 'UNSUPPORTED_IMAGE_FORMAT'
+    | 'IMAGE_TOO_LARGE'
+    | 'INVALID_ROW_DATA';
+  message: string;
+}
+
+export interface QuestionPreviewRow {
+  rowNumber: number; // 1-based Excel row
+  moduleNumber: 1 | 2 | 3 | 4 | 5;
+  questionText: string;
+  optionA: string;
+  optionB: string;
+  optionC: string;
+  optionD: string;
+  correctOption: 'A' | 'B' | 'C' | 'D' | '';
+  difficulty: DifficultyLevel;
+  imageId: string | null;
+  imageSource?: 'floating' | 'in_cell' | 'manual' | null;
+  warnings: QuestionImportIssue[];
+  errors: string[];
+  excluded?: boolean;
+}
+
+export interface QuestionImportPreviewSession {
+  previewId: string;
+  bankId: string;
+  subjectId: string;
+  moduleNumber: 1 | 2 | 3 | 4 | 5;
+  fileName: string;
+  createdAt: string;
+  rows: QuestionPreviewRow[];
+  issues: QuestionImportIssue[];
+}
+
+export interface ShuffledPaperQuestion {
+  orderNumber: number;
+  questionId: string;
+  moduleNumber: 1 | 2 | 3 | 4 | 5;
+  questionText: string;
+  optionA: string;
+  optionB: string;
+  optionC: string;
+  optionD: string;
+  correctOption: 'A' | 'B' | 'C' | 'D';
+  imageId: string | null;
+}
+
+export interface GeneratedPaperSet {
+  version: 'A' | 'B' | 'C' | 'D';
+  subjectId: string;
+  subjectCode: string;
+  seed: string;
+  questions: ShuffledPaperQuestion[];
+  answerKey: Record<number, 'A' | 'B' | 'C' | 'D'>;
+}
+
+export interface CoeQuestionBankSummary {
+  bankId: string;
+  departmentCode: string;
+  subjectCode: string;
+  subjectName: string;
+  revision: string;
+  status: SubmissionStatus;
+  totalQuestions: number;
+  moduleCounts: Record<number, number>;
+  finalizedAt?: string;
+}
+
+export interface StudentQuestionViewItem {
+  orderNumber: number;
+  questionId: string;
+  questionText: string;
+  optionA: string;
+  optionB: string;
+  optionC: string;
+  optionD: string;
+  imageDataUrl: string | null;
+  imageId: string | null;
 }
 
 export interface ModuleProgress {
@@ -183,11 +272,21 @@ export interface QuestionBankRecord {
   correctionRequestedAt?: string;
 }
 
+export type StudentDirectoryStatus = 'ACTIVE' | 'INACTIVE';
+
+export interface SemesterChangeEntry {
+  fromSemester: number | null;
+  toSemester: number;
+  changedAt: string;
+  changedBy: string;
+  reason?: string;
+}
+
 export interface StudentRecord {
   id: string;
   usn: string;
   studentName: string;
-  dob: string; // YYYY-MM-DD
+  dob: string; // YYYY-MM-DD (never logged or returned in COE/student responses)
   departmentId: string;
   departmentCode: string;
   semesterId: string;
@@ -196,6 +295,144 @@ export interface StudentRecord {
   academicYearId: string;
   isValid: boolean;
   validationErrors: string[];
+  status?: StudentDirectoryStatus;
+  attributes?: Record<string, string>;
+  semesterHistory?: SemesterChangeEntry[];
+  updatedAt?: string;
+}
+
+export interface StudentDirectoryRecord {
+  id: string;
+  usn: string;
+  studentName: string;
+  dob: string; // ISO YYYY-MM-DD (stored internally only)
+  departmentId: string;
+  branchCode: string; // canonical normalized branch e.g. CSE, ECE
+  semesterNumber: number;
+  section: string;
+  status: StudentDirectoryStatus;
+  attributes: Record<string, string>;
+  semesterHistory: SemesterChangeEntry[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type PublicStudentDirectoryRecord = Omit<StudentDirectoryRecord, 'dob'>;
+
+export type UploadIssueSeverity = 'ERROR' | 'WARNING';
+
+export interface StudentUploadIssue {
+  field: string;
+  severity: UploadIssueSeverity;
+  code:
+    | 'MISSING_REQUIRED'
+    | 'DUPLICATE_USN_IN_FILE'
+    | 'WRONG_BRANCH'
+    | 'CROSS_BRANCH_CONFLICT'
+    | 'INVALID_USN_FORMAT'
+    | 'AMBIGUOUS_DOB'
+    | 'INVALID_DOB'
+    | 'INVALID_SEMESTER'
+    | 'UNKNOWN_BRANCH';
+  message: string;
+}
+
+export type StudentRowDisposition = 'NEW' | 'UPDATED' | 'UNCHANGED' | 'CONFLICT' | 'ERROR' | 'EXCLUDED';
+
+export interface StudentUploadPreviewRow {
+  rowNumber: number; // 1-based Excel row
+  usn: string;
+  studentName: string;
+  dob: string; // normalized ISO YYYY-MM-DD or raw if invalid
+  branchRaw: string;
+  branchCode: string; // normalized branch code
+  semesterNumber: number | null;
+  section: string;
+  attributes: Record<string, string>;
+  disposition: StudentRowDisposition;
+  issues: StudentUploadIssue[];
+  excluded: boolean;
+}
+
+export interface StudentUploadPreviewSession {
+  previewId: string;
+  fileName: string;
+  uploadedBy: string;
+  uploadedByRole: UserRole | 'COE';
+  actorBranchCode?: string;
+  uploadedAt: string;
+  rawUploadAuditId: string;
+  detectedColumns: Record<string, string>;
+  extraColumns: string[];
+  counts: {
+    newCount: number;
+    updatedCount: number;
+    unchangedCount: number;
+    conflictCount: number;
+    errorCount: number;
+    warningCount: number;
+    excludedCount: number;
+  };
+  rows: StudentUploadPreviewRow[];
+}
+
+export interface StudentDirectorySettings {
+  branchAliases: Record<string, string>; // lowercase alias -> canonical branch code
+  usnRegex: string;
+  usnStrictMode: boolean; // false -> WARNING, true -> ERROR
+  dobDayFirst: boolean;
+  sessionAccessCodeEnabled: boolean;
+  sessionAccessCode: string;
+  maxLoginAttemptsPerUsn: number;
+  maxLoginAttemptsPerClient: number;
+  lockoutDurationMs: number;
+  tokenTtlMs: number;
+}
+
+export interface ExamEligibilityConfig {
+  examId: string;
+  allowedBranches: string[];
+  semesterNumber: number;
+  allowedSections: string[];
+  isFrozen: boolean;
+  frozenAt?: string;
+  eligibleUsnsSnapshot: string[]; // frozen immutable snapshot when frozen
+}
+
+export interface ExamVersionAssignment {
+  usn: string;
+  studentName: string;
+  branchCode: string;
+  semesterNumber: number;
+  section: string;
+  roomCode: string;
+  seatOrder: number;
+  assignedVersion: 'A' | 'B' | 'C' | 'D';
+}
+
+export interface CoeStudentCountSummary {
+  branchCode: string;
+  semesterNumber: number;
+  section: string;
+  activeCount: number;
+  inactiveCount: number;
+  totalCount: number;
+}
+
+export interface StudentAuthSession {
+  token: string;
+  usn: string;
+  examId: string;
+  issuedAt: number;
+  expiresAt: number;
+  signature: string;
+  sessionVersion: number;
+}
+
+export interface StudentLoginAuditState {
+  activeTokensByUsn: Record<string, StudentAuthSession>;
+  failedAttemptsByUsn: Record<string, { count: number; lockedUntil: number }>;
+  failedAttemptsByClient: Record<string, { count: number; lockedUntil: number }>;
 }
 
 export interface StudentRosterSubmission {
@@ -299,7 +536,15 @@ export interface AuditLogEntry {
     | 'SUBJECT_MAPPED'
     | 'QUESTION_BANK_FINALIZED'
     | 'QUESTION_BANK_CORRECTION_REQUEST'
+    | 'QUESTION_BANK_IMPORTED'
     | 'ROSTER_SUBMITTED'
+    | 'STUDENT_DIRECTORY_ADDED'
+    | 'STUDENT_DIRECTORY_UPDATED'
+    | 'STUDENT_DIRECTORY_DEACTIVATED'
+    | 'STUDENT_DIRECTORY_REACTIVATED'
+    | 'EXAM_ELIGIBILITY_UPDATED'
+    | 'EXAM_VERSION_ASSIGNED'
+    | 'STUDENT_SESSION_RESET'
     | 'REPORT_ACCESSED';
   activityDescription: string;
   departmentCode: string;

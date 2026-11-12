@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 import {
   AlertCircle,
   CheckCircle2,
@@ -100,6 +100,13 @@ export const LoginPage: React.FC = () => {
             >
               Student Exam Portal
             </a>
+            <span className="text-slate-300" aria-hidden="true">·</span>
+            <Link
+              to="/admin/student"
+              className="font-medium text-[#6D5CE8] hover:underline whitespace-nowrap"
+            >
+              Student Directory Exam Login
+            </Link>
           </div>
         </div>
       </header>

@@ -7,8 +7,10 @@ import {
   CheckSquare,
   Download,
   Edit3,
+  Eye,
   FileSpreadsheet,
   FileUp,
+  Image as ImageIcon,
   Lock,
   Plus,
   Search,
@@ -22,16 +24,27 @@ import { subjectService } from '../../services/subjectService';
 import {
   questionBankService,
   QuestionBankValidationReport,
+  validateQuestionBank,
 } from '../../services/questionBankService';
+import {
+  buildCorrectedQuestionExcelBytes,
+  buildQuestionExcelTemplateBytes,
+  confirmQuestionExcelImport,
+  getStudentQuestionView,
+  previewQuestionExcelImport,
+  updatePreviewQuestionRow,
+} from '../../services/questionImageExcelService';
+import { imageStorage, validateAndProcessImage } from '../../services/imageStorage';
 import {
   DifficultyLevel,
   MCQQuestion,
   QuestionBankRecord,
+  QuestionImportPreviewSession,
   Subject,
 } from '../../types';
 import { StatusBadge } from '../../components/StatusBadge';
 import { ConfirmDialog } from '../../components/ConfirmDialog';
-import { downloadCsvFile } from '../../utils/exportUtils';
+import { downloadBinaryFile, downloadCsvFile } from '../../utils/exportUtils';
 
 export const QuestionBankPage: React.FC = () => {
   const { user } = useAuth();
@@ -67,6 +80,7 @@ export const QuestionBankPage: React.FC = () => {
     optionD: string;
     correctOption: 'A' | 'B' | 'C' | 'D';
     difficulty: DifficultyLevel;
+    imageId: string | null;
   }>({
     moduleNumber: 1,
     questionText: '',
@@ -76,8 +90,14 @@ export const QuestionBankPage: React.FC = () => {
     optionD: '',
     correctOption: 'A',
     difficulty: 'Standard',
+    imageId: null,
   });
   const [submitting, setSubmitting] = useState(false);
+
+  // Excel Embedded Image Import Preview & Student Preview Modals
+  const [excelPreview, setExcelPreview] = useState<QuestionImportPreviewSession | null>(null);
+  const [excelImportMode, setExcelImportMode] = useState<'append' | 'replace_module'>('append');
+  const [studentPreviewOpen, setStudentPreviewOpen] = useState(false);
 
   // Finalize Confirmation Modal
   const [finalizeConfirmOpen, setFinalizeConfirmOpen] = useState(false);
@@ -209,6 +229,7 @@ export const QuestionBankPage: React.FC = () => {
       optionD: '',
       correctOption: 'A',
       difficulty: bank.declaredDifficulty,
+      imageId: null,
     });
     setQModalOpen(true);
   };
@@ -224,6 +245,7 @@ export const QuestionBankPage: React.FC = () => {
       optionD: q.optionD,
       correctOption: (q.correctOption || 'A') as 'A' | 'B' | 'C' | 'D',
       difficulty: q.difficulty,
+      imageId: q.imageId ?? null,
     });
     setQModalOpen(true);
   };
@@ -345,6 +367,24 @@ export const QuestionBankPage: React.FC = () => {
     }
 
     try {
+      if (ext === 'xlsx') {
+        const buffer = new Uint8Array(await file.arrayBuffer());
+        const session = await previewQuestionExcelImport({
+          bankId: bank.id,
+          departmentId: user.departmentId,
+          defaultModuleNumber: (activeModuleFilter === 0 ? 1 : activeModuleFilter) as 1 | 2 | 3 | 4 | 5,
+          fileName: file.name,
+          xlsxBytes: buffer,
+        });
+        setExcelPreview(session);
+        setFeedback({
+          type: 'success',
+          message: `Parsed "${file.name}" (${session.rows.length} rows, ${session.rows.filter((r) => r.imageId).length} images attached, ${session.issues.length} warnings). Review preview below before confirming.`,
+        });
+        e.target.value = '';
+        return;
+      }
+
       const text = await file.text();
       const lines = text
         .split(/\r?\n/)
@@ -352,7 +392,6 @@ export const QuestionBankPage: React.FC = () => {
         .filter(Boolean);
 
       if (lines.length <= 1) {
-        // If user uploaded an empty or binary Excel file in dev mode, offer completing the active module
         await handleFillAllModulesTo300();
         e.target.value = '';
         return;
@@ -400,6 +439,69 @@ export const QuestionBankPage: React.FC = () => {
       });
     } finally {
       e.target.value = '';
+    }
+  };
+
+  const handleDownloadXlsxTemplate = () => {
+    const bytes = buildQuestionExcelTemplateBytes();
+    downloadBinaryFile(
+      `MIT_Mysore_QuestionBank_Template_${bank?.subjectCode || 'SUBJECT'}.xlsx`,
+      bytes,
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    );
+  };
+
+  const handleSingleQuestionImageSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const bytes = new Uint8Array(await file.arrayBuffer());
+      const processed = await validateAndProcessImage(bytes);
+      if (!processed.ok) {
+        setFeedback({ type: 'error', message: processed.message });
+        return;
+      }
+      const meta = imageStorage.putSync(processed.bytes, processed.mimeType, {
+        width: processed.width,
+        height: processed.height,
+        originalFilename: file.name,
+      });
+      setQForm((prev) => ({ ...prev, imageId: meta.imageId }));
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to process image.',
+      });
+    } finally {
+      e.target.value = '';
+    }
+  };
+
+  const handleConfirmExcelPreview = async () => {
+    if (!excelPreview || !user?.departmentId) return;
+    setSubmitting(true);
+    try {
+      const res = confirmQuestionExcelImport({
+        previewId: excelPreview.previewId,
+        departmentId: user.departmentId,
+        mode: excelImportMode,
+        actorName: user.fullName,
+        actorEmployeeId: user.employeeId,
+      });
+      setBank(res.bank);
+      setValidation(validateQuestionBank(res.bank));
+      setFeedback({
+        type: 'success',
+        message: `Imported ${res.importedCount} MCQs (${res.attachedImageCount} with embedded images)${res.warnings.length ? ` with ${res.warnings.length} warning(s)` : ''}.`,
+      });
+      setExcelPreview(null);
+    } catch (err) {
+      setFeedback({
+        type: 'error',
+        message: err instanceof Error ? err.message : 'Failed to confirm Excel import.',
+      });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -729,6 +831,24 @@ export const QuestionBankPage: React.FC = () => {
                       <span>Template CSV</span>
                     </button>
 
+                    <button
+                      type="button"
+                      onClick={handleDownloadXlsxTemplate}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#1F2937] bg-white border border-[#D9E2EF] hover:bg-slate-100 rounded-md cursor-pointer"
+                    >
+                      <Download className="w-3.5 h-3.5 text-[#2563EB]" />
+                      <span>Template .xlsx</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setStudentPreviewOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-semibold text-[#17243A] bg-white border border-[#D9E2EF] hover:bg-slate-100 rounded-md cursor-pointer"
+                    >
+                      <Eye className="w-3.5 h-3.5 text-[#6D5CE8]" />
+                      <span>Student View Preview</span>
+                    </button>
+
                     <input
                       ref={fileInputRef}
                       type="file"
@@ -1039,6 +1159,18 @@ export const QuestionBankPage: React.FC = () => {
                           M{q.moduleNumber}
                         </td>
                         <td className="py-3.5 px-4 space-y-2 max-w-2xl">
+                          {q.imageId && imageStorage.toDataUrlSync(q.imageId) && (
+                            <div className="mb-1.5 inline-flex items-center gap-2 p-1.5 bg-[#F5F7FB] border border-[#D9E2EF] rounded-md">
+                              <img
+                                src={imageStorage.toDataUrlSync(q.imageId)!}
+                                alt={`Question ${q.questionId} diagram`}
+                                className="max-h-20 max-w-xs object-contain rounded"
+                              />
+                              <span className="text-[10px] font-mono text-[#64748B]">
+                                {q.imageId.slice(0, 10)}
+                              </span>
+                            </div>
+                          )}
                           <div className="font-medium text-[#1F2937] leading-snug">
                             {q.questionText}
                           </div>
@@ -1261,6 +1393,44 @@ export const QuestionBankPage: React.FC = () => {
                 </div>
               </div>
 
+              <div className="p-3 bg-[#F5F7FB] border border-[#D9E2EF] rounded-md space-y-2">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-semibold text-[#1F2937] flex items-center gap-1.5">
+                    <ImageIcon className="w-3.5 h-3.5 text-[#2563EB]" />
+                    <span>Optional Question Diagram (PNG / JPG, max 1 MB)</span>
+                  </label>
+                  <div className="flex items-center gap-2">
+                    <label className="px-2.5 py-1 text-[11px] font-semibold bg-white border border-[#D9E2EF] hover:bg-slate-100 rounded cursor-pointer">
+                      {qForm.imageId ? 'Replace Image' : 'Attach Image'}
+                      <input
+                        type="file"
+                        accept=".png,.jpg,.jpeg,image/png,image/jpeg"
+                        onChange={handleSingleQuestionImageSelect}
+                        className="hidden"
+                      />
+                    </label>
+                    {qForm.imageId && (
+                      <button
+                        type="button"
+                        onClick={() => setQForm({ ...qForm, imageId: null })}
+                        className="px-2 py-1 text-[11px] font-semibold text-[#B42318] bg-white border border-[#B42318]/30 hover:bg-red-50 rounded"
+                      >
+                        Remove Image
+                      </button>
+                    )}
+                  </div>
+                </div>
+                {qForm.imageId && imageStorage.toDataUrlSync(qForm.imageId) && (
+                  <div className="flex items-center gap-3 pt-1">
+                    <img
+                      src={imageStorage.toDataUrlSync(qForm.imageId)!}
+                      alt="Question diagram preview"
+                      className="max-h-28 max-w-full object-contain rounded border border-[#D9E2EF] bg-white p-1"
+                    />
+                  </div>
+                )}
+              </div>
+
               <div className="pt-2 flex justify-end gap-2">
                 <button
                   type="button"
@@ -1344,6 +1514,269 @@ export const QuestionBankPage: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Excel Embedded-Image Preview & Edit Modal */}
+      {excelPreview && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#17243A]/60 p-4">
+          <div className="w-full max-w-5xl max-h-[90vh] flex flex-col bg-white rounded-lg border border-[#D9E2EF] shadow-lg overflow-hidden">
+            <div className="px-6 py-4 bg-[#F5F7FB] border-b border-[#D9E2EF] flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-[#17243A]">
+                  Excel Question Import Preview — {excelPreview.fileName}
+                </h3>
+                <p className="text-xs text-[#64748B]">
+                  {excelPreview.rows.length} rows parsed ·{' '}
+                  {excelPreview.rows.filter((r) => r.imageId).length} images attached ·{' '}
+                  {excelPreview.issues.length} warning(s)
+                </p>
+              </div>
+              <button type="button" onClick={() => setExcelPreview(null)}>
+                <X className="w-4 h-4 text-[#64748B]" />
+              </button>
+            </div>
+
+            <div className="p-5 overflow-y-auto space-y-4 flex-1">
+              {excelPreview.issues.length > 0 && (
+                <div className="p-3 bg-[#FFFBEB] border border-[#F59E0B]/40 rounded-md space-y-1 text-xs text-[#92400E]">
+                  <div className="font-bold flex items-center gap-1.5">
+                    <AlertTriangle className="w-4 h-4" />
+                    <span>Import Warnings ({excelPreview.issues.length})</span>
+                  </div>
+                  {excelPreview.issues.map((iss, idx) => (
+                    <div key={idx}>
+                      • Row {iss.rowNumber}: [{iss.code}] {iss.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <div className="border border-[#D9E2EF] rounded-md overflow-x-auto">
+                <table className="w-full text-left border-collapse text-xs">
+                  <thead className="bg-[#F5F7FB] border-b border-[#D9E2EF] text-[#64748B]">
+                    <tr>
+                      <th className="py-2.5 px-3">Row</th>
+                      <th className="py-2.5 px-3">Mod</th>
+                      <th className="py-2.5 px-3">Question & Options</th>
+                      <th className="py-2.5 px-3">Picture Preview & Controls</th>
+                      <th className="py-2.5 px-3 text-right">Skip</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-[#D9E2EF]">
+                    {excelPreview.rows.map((row) => {
+                      const imgUrl = imageStorage.toDataUrlSync(row.imageId);
+                      return (
+                        <tr key={row.rowNumber} className={row.excluded ? 'opacity-45 bg-slate-50' : ''}>
+                          <td className="py-2.5 px-3 font-mono font-bold">#{row.rowNumber}</td>
+                          <td className="py-2.5 px-3 font-mono">M{row.moduleNumber}</td>
+                          <td className="py-2.5 px-3 space-y-1 max-w-md">
+                            <div className="font-medium text-[#1F2937]">{row.questionText}</div>
+                            <div className="text-[11px] text-[#64748B]">
+                              A: {row.optionA} | B: {row.optionB} | C: {row.optionC} | D: {row.optionD} (Key:{' '}
+                              <strong>{row.correctOption || '—'}</strong>)
+                            </div>
+                            {row.errors.length > 0 && (
+                              <div className="text-[11px] text-[#B42318] font-semibold">
+                                {row.errors.join(' ')}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3">
+                            {imgUrl ? (
+                              <div className="flex items-center gap-2">
+                                <img
+                                  src={imgUrl}
+                                  alt={`Row ${row.rowNumber} picture`}
+                                  className="h-14 max-w-[120px] object-contain border border-[#D9E2EF] rounded bg-white p-0.5"
+                                />
+                                <div className="flex flex-col gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={async () => {
+                                      const updated = await updatePreviewQuestionRow({
+                                        previewId: excelPreview.previewId,
+                                        rowNumber: row.rowNumber,
+                                        imageAction: { type: 'remove' },
+                                      });
+                                      setExcelPreview(updated);
+                                    }}
+                                    className="px-2 py-0.5 text-[10px] font-semibold text-[#B42318] border border-[#B42318]/30 rounded hover:bg-red-50"
+                                  >
+                                    Remove
+                                  </button>
+                                  <label className="px-2 py-0.5 text-[10px] font-semibold text-[#2563EB] border border-[#2563EB]/30 rounded hover:bg-blue-50 cursor-pointer text-center">
+                                    Replace
+                                    <input
+                                      type="file"
+                                      accept=".png,.jpg,.jpeg,image/png,image/jpeg"
+                                      className="hidden"
+                                      onChange={async (ev) => {
+                                        const f = ev.target.files?.[0];
+                                        if (!f) return;
+                                        try {
+                                          const b = new Uint8Array(await f.arrayBuffer());
+                                          const updated = await updatePreviewQuestionRow({
+                                            previewId: excelPreview.previewId,
+                                            rowNumber: row.rowNumber,
+                                            imageAction: { type: 'replace', bytes: b, filename: f.name },
+                                          });
+                                          setExcelPreview(updated);
+                                        } catch (err) {
+                                          setFeedback({
+                                            type: 'error',
+                                            message: err instanceof Error ? err.message : 'Replace failed',
+                                          });
+                                        } finally {
+                                          ev.target.value = '';
+                                        }
+                                      }}
+                                    />
+                                  </label>
+                                </div>
+                              </div>
+                            ) : (
+                              <label className="px-2 py-1 text-[11px] font-semibold text-[#64748B] border border-dashed border-[#CBD5E1] rounded hover:bg-slate-50 cursor-pointer inline-block">
+                                + Attach Image
+                                <input
+                                  type="file"
+                                  accept=".png,.jpg,.jpeg,image/png,image/jpeg"
+                                  className="hidden"
+                                  onChange={async (ev) => {
+                                    const f = ev.target.files?.[0];
+                                    if (!f) return;
+                                    try {
+                                      const b = new Uint8Array(await f.arrayBuffer());
+                                      const updated = await updatePreviewQuestionRow({
+                                        previewId: excelPreview.previewId,
+                                        rowNumber: row.rowNumber,
+                                        imageAction: { type: 'replace', bytes: b, filename: f.name },
+                                      });
+                                      setExcelPreview(updated);
+                                    } catch (err) {
+                                      setFeedback({
+                                        type: 'error',
+                                        message: err instanceof Error ? err.message : 'Attach failed',
+                                      });
+                                    } finally {
+                                      ev.target.value = '';
+                                    }
+                                  }}
+                                />
+                              </label>
+                            )}
+                          </td>
+                          <td className="py-2.5 px-3 text-right">
+                            <input
+                              type="checkbox"
+                              checked={Boolean(row.excluded)}
+                              onChange={async (ev) => {
+                                const updated = await updatePreviewQuestionRow({
+                                  previewId: excelPreview.previewId,
+                                  rowNumber: row.rowNumber,
+                                  patch: { excluded: ev.target.checked },
+                                });
+                                setExcelPreview(updated);
+                              }}
+                            />
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="px-6 py-4 bg-[#F5F7FB] border-t border-[#D9E2EF] flex flex-wrap items-center justify-between gap-3">
+              <div className="flex items-center gap-3 text-xs">
+                <select
+                  value={excelImportMode}
+                  onChange={(e) => setExcelImportMode(e.target.value as 'append' | 'replace_module')}
+                  className="px-2.5 py-1.5 border border-[#D9E2EF] rounded bg-white text-xs font-medium"
+                >
+                  <option value="append">Append to Existing Questions</option>
+                  <option value="replace_module">Replace Active Module Questions</option>
+                </select>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const bytes = buildCorrectedQuestionExcelBytes({ previewId: excelPreview.previewId });
+                    downloadBinaryFile(
+                      `Corrected_${excelPreview.fileName.replace(/\.xlsx$/i, '')}.xlsx`,
+                      bytes,
+                      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+                    );
+                  }}
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold border border-[#D9E2EF] bg-white hover:bg-slate-100 rounded"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Download Corrected .xlsx</span>
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setExcelPreview(null)}
+                  className="px-4 py-2 text-xs font-semibold border border-[#D9E2EF] rounded-md bg-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={submitting}
+                  onClick={handleConfirmExcelPreview}
+                  className="px-4 py-2 text-xs font-semibold text-white bg-[#16834A] hover:bg-[#136C3B] rounded-md"
+                >
+                  {submitting ? 'Importing...' : 'Confirm & Import Questions'}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Student Question View Preview Modal */}
+      {studentPreviewOpen && bank && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#17243A]/60 p-4">
+          <div className="w-full max-w-3xl max-h-[88vh] flex flex-col bg-white rounded-lg border border-[#D9E2EF] shadow-lg overflow-hidden">
+            <div className="px-6 py-4 bg-[#17243A] text-white flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold">Student Exam View Preview — {bank.subjectCode}</h3>
+                <p className="text-xs text-slate-300">
+                  Shows diagram above question text (scaled to fit, never cropped); questions without diagrams render unchanged.
+                </p>
+              </div>
+              <button type="button" onClick={() => setStudentPreviewOpen(false)}>
+                <X className="w-4 h-4 text-slate-300 hover:text-white" />
+              </button>
+            </div>
+            <div className="p-6 overflow-y-auto space-y-5 bg-[#F5F7FB]">
+              {getStudentQuestionView(displayedQuestions.slice(0, 10)).map((sq) => (
+                <div key={sq.questionId} className="bg-white p-5 rounded-lg border border-[#D9E2EF] space-y-3">
+                  <div className="text-xs font-mono font-bold text-[#2563EB]">Question {sq.orderNumber}</div>
+                  {sq.imageDataUrl && (
+                    <div className="flex justify-start bg-slate-50 border border-[#D9E2EF] rounded p-3">
+                      <img
+                        src={sq.imageDataUrl}
+                        alt={`Question ${sq.orderNumber} figure`}
+                        className="max-h-64 max-w-full w-auto h-auto object-contain"
+                      />
+                    </div>
+                  )}
+                  <div className="text-sm font-semibold text-[#17243A] leading-relaxed">
+                    {sq.questionText}
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-[#1F2937]">
+                    <div className="p-2.5 border border-[#D9E2EF] rounded">A. {sq.optionA}</div>
+                    <div className="p-2.5 border border-[#D9E2EF] rounded">B. {sq.optionB}</div>
+                    <div className="p-2.5 border border-[#D9E2EF] rounded">C. {sq.optionC}</div>
+                    <div className="p-2.5 border border-[#D9E2EF] rounded">D. {sq.optionD}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         </div>
       )}
