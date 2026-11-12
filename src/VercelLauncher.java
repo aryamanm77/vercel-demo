@@ -1,14 +1,31 @@
+import com.sun.net.httpserver.Headers;
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
+import java.io.OutputStream;
+import java.net.ConnectException;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.ServerSocket;
 import java.net.URI;
 import java.net.URLDecoder;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.time.Duration;
 import java.util.ArrayList;
 import java.util.Base64;
 import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /**
  * Container entrypoint translating Vercel Postgres URIs and environment secrets into
@@ -16,11 +33,28 @@ import java.util.Map;
  */
 public final class VercelLauncher {
 
+    private static final Set<String> HOP_BY_HOP_REQUEST_HEADERS = Set.of(
+            "host", "connection", "content-length", "transfer-encoding", "keep-alive",
+            "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade",
+            "expect", "http2-settings"
+    );
+
+    private static final Set<String> HOP_BY_HOP_RESPONSE_HEADERS = Set.of(
+            "connection", "content-length", "transfer-encoding", "keep-alive",
+            "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade"
+    );
+
     private VercelLauncher() {
     }
 
     public static void main(String[] args) throws Exception {
-        LaunchConfig cfg = buildLaunchConfig(System.getenv(), Path.of("").toAbsolutePath().normalize());
+        Path workDir = Path.of("").toAbsolutePath().normalize();
+        LaunchConfig cfg = buildLaunchConfig(System.getenv(), workDir);
+        Path portalDir = resolvePortalDir(System.getenv(), workDir);
+        boolean gatewayMode = portalDir != null;
+        int publicPort = Integer.parseInt(cfg.port());
+        int qbankPort = gatewayMode ? pickFreeLoopbackPort() : publicPort;
+        String qbankBindAddress = gatewayMode ? "127.0.0.1" : "0.0.0.0";
 
         List<String> cmd = new ArrayList<>();
         cmd.add(resolveJavaBinary());
@@ -29,8 +63,8 @@ public final class VercelLauncher {
         cmd.add("-Djava.security.egd=file:/dev/./urandom");
         cmd.add("-jar");
         cmd.add(cfg.jarPath().toString());
-        cmd.add("--server.port=" + cfg.port());
-        cmd.add("--server.address=0.0.0.0");
+        cmd.add("--server.port=" + qbankPort);
+        cmd.add("--server.address=" + qbankBindAddress);
         cmd.add("--server.ssl.enabled=false");
         cmd.add("--qbank.base-path=" + cfg.basePath());
         cmd.add("--qbank.storage-dir=" + cfg.storageDir());
@@ -56,13 +90,23 @@ public final class VercelLauncher {
         childEnv.put("QBANK_ENGINE_TOKEN", cfg.engineToken());
 
         Process child = pb.start();
+        PortalGateway gateway = gatewayMode
+                ? startPortalGateway(publicPort, qbankPort, cfg.basePath(), portalDir)
+                : null;
+
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
+            if (gateway != null) {
+                gateway.close();
+            }
             if (child.isAlive()) {
                 child.destroy();
             }
         }, "qbank-shutdown-bridge"));
 
         int exitCode = child.waitFor();
+        if (gateway != null) {
+            gateway.close();
+        }
         System.exit(exitCode);
     }
 
@@ -257,6 +301,298 @@ public final class VercelLauncher {
             }
         }
         return null;
+    }
+
+    static Path resolvePortalDir(Map<String, String> env, Path workDir) {
+        String configured = trimToNull(env.get("QBANK_PORTAL_DIR"));
+        if (configured != null) {
+            Path explicit = Path.of(configured).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(explicit.resolve("index.html"))) {
+                throw new IllegalStateException("QBANK_PORTAL_DIR does not contain index.html: " + explicit);
+            }
+            return explicit;
+        }
+        for (String candidateName : List.of("portal-dist", "dist")) {
+            Path candidate = workDir.resolve(candidateName).toAbsolutePath().normalize();
+            if (Files.isRegularFile(candidate.resolve("index.html"))) {
+                return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static int pickFreeLoopbackPort() throws IOException {
+        try (ServerSocket socket = new ServerSocket(0, 50, InetAddress.getByName("127.0.0.1"))) {
+            return socket.getLocalPort();
+        }
+    }
+
+    private static String normalizeBasePath(String rawBasePath) {
+        String trimmed = trimToEmpty(rawBasePath);
+        if (trimmed.isEmpty() || "/".equals(trimmed)) {
+            return "";
+        }
+        String withLeading = trimmed.startsWith("/") ? trimmed : "/" + trimmed;
+        return withLeading.endsWith("/") ? withLeading.substring(0, withLeading.length() - 1) : withLeading;
+    }
+
+    private static PortalGateway startPortalGateway(int publicPort, int qbankPort, String rawBasePath, Path portalDir)
+            throws IOException {
+        String basePath = normalizeBasePath(rawBasePath);
+        HttpServer server = HttpServer.create(new InetSocketAddress("0.0.0.0", publicPort), 0);
+        AtomicInteger threadCounter = new AtomicInteger(1);
+        ExecutorService executor = Executors.newCachedThreadPool(runnable -> {
+            Thread t = new Thread(runnable, "vercel-portal-gateway-" + threadCounter.getAndIncrement());
+            t.setDaemon(true);
+            return t;
+        });
+        server.setExecutor(executor);
+
+        HttpClient client = HttpClient.newBuilder()
+                .version(HttpClient.Version.HTTP_1_1)
+                .followRedirects(HttpClient.Redirect.NEVER)
+                .connectTimeout(Duration.ofSeconds(5))
+                .build();
+
+        server.createContext("/", exchange -> {
+            try (exchange) {
+                routeExchange(exchange, basePath, qbankPort, portalDir, client);
+            } catch (Exception e) {
+                try {
+                    sendPlainText(exchange, 502, "Gateway error");
+                } catch (IOException ignored) {
+                }
+            }
+        });
+        server.start();
+        return new PortalGateway(server, executor);
+    }
+
+    private static void routeExchange(
+            HttpExchange exchange,
+            String basePath,
+            int qbankPort,
+            Path portalDir,
+            HttpClient client) throws IOException {
+        String rawPath = exchange.getRequestURI().getRawPath();
+        if (rawPath == null || rawPath.isEmpty()) {
+            rawPath = "/";
+        }
+
+        boolean isQbankRoute = !basePath.isEmpty()
+                && (rawPath.equals(basePath) || rawPath.startsWith(basePath + "/"));
+        if (isQbankRoute) {
+            proxyToQbank(exchange, qbankPort, client);
+            return;
+        }
+
+        if ("/".equals(rawPath)) {
+            String target = (basePath.isEmpty() ? "" : basePath) + "/index.html";
+            sendRedirect(exchange, target);
+            return;
+        }
+
+        servePortalStaticOrSpa(exchange, rawPath, portalDir);
+    }
+
+    private static void proxyToQbank(HttpExchange exchange, int qbankPort, HttpClient client) throws IOException {
+        URI reqUri = exchange.getRequestURI();
+        String rawPath = reqUri.getRawPath();
+        String pathAndQuery = (rawPath == null || rawPath.isEmpty() ? "/" : rawPath)
+                + (reqUri.getRawQuery() != null ? "?" + reqUri.getRawQuery() : "");
+        URI targetUri = URI.create("http://127.0.0.1:" + qbankPort + pathAndQuery);
+
+        String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
+        boolean readBody = !("GET".equals(method) || "HEAD".equals(method));
+        byte[] reqBytes = readBody ? exchange.getRequestBody().readAllBytes() : new byte[0];
+        HttpRequest.BodyPublisher publisher = readBody
+                ? HttpRequest.BodyPublishers.ofByteArray(reqBytes)
+                : HttpRequest.BodyPublishers.noBody();
+
+        HttpRequest.Builder builder = HttpRequest.newBuilder(targetUri)
+                .timeout(Duration.ofSeconds(60))
+                .method(method, publisher);
+
+        Headers reqHeaders = exchange.getRequestHeaders();
+        String originalHost = null;
+        boolean hasForwardedHost = false;
+        boolean hasForwardedProto = false;
+        boolean hasForwardedFor = false;
+        for (var entry : reqHeaders.entrySet()) {
+            String key = entry.getKey();
+            if (key == null) continue;
+            String lower = key.toLowerCase(Locale.ROOT);
+            if ("host".equals(lower) && !entry.getValue().isEmpty()) {
+                originalHost = entry.getValue().get(0);
+            }
+            if ("x-forwarded-host".equals(lower)) hasForwardedHost = true;
+            if ("x-forwarded-proto".equals(lower)) hasForwardedProto = true;
+            if ("x-forwarded-for".equals(lower)) hasForwardedFor = true;
+            if (HOP_BY_HOP_REQUEST_HEADERS.contains(lower) || lower.startsWith(":")) {
+                continue;
+            }
+            for (String value : entry.getValue()) {
+                builder.header(key, value);
+            }
+        }
+        if (!hasForwardedHost && originalHost != null && !originalHost.isBlank()) {
+            builder.header("X-Forwarded-Host", originalHost);
+        }
+        if (!hasForwardedProto) {
+            builder.header("X-Forwarded-Proto", "http");
+        }
+        if (!hasForwardedFor && exchange.getRemoteAddress() != null && exchange.getRemoteAddress().getAddress() != null) {
+            builder.header("X-Forwarded-For", exchange.getRemoteAddress().getAddress().getHostAddress());
+        }
+
+        HttpResponse<byte[]> upstream;
+        try {
+            upstream = client.send(builder.build(), HttpResponse.BodyHandlers.ofByteArray());
+        } catch (ConnectException startingUp) {
+            exchange.getResponseHeaders().set("Retry-After", "1");
+            sendPlainText(exchange, 503, "QBank backend is starting up. Please retry.");
+            return;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            sendPlainText(exchange, 502, "Upstream request interrupted");
+            return;
+        }
+
+        String internalOrigin = "http://127.0.0.1:" + qbankPort;
+        Headers respHeaders = exchange.getResponseHeaders();
+        for (var entry : upstream.headers().map().entrySet()) {
+            String key = entry.getKey();
+            if (key == null) continue;
+            String lower = key.toLowerCase(Locale.ROOT);
+            if (HOP_BY_HOP_RESPONSE_HEADERS.contains(lower) || lower.startsWith(":")) {
+                continue;
+            }
+            List<String> values = entry.getValue();
+            if ("location".equals(lower)) {
+                List<String> rewritten = new ArrayList<>(values.size());
+                for (String v : values) {
+                    rewritten.add(v.startsWith(internalOrigin) ? v.substring(internalOrigin.length()) : v);
+                }
+                respHeaders.put(key, rewritten);
+            } else {
+                respHeaders.put(key, values);
+            }
+        }
+
+        int status = upstream.statusCode();
+        byte[] respBody = upstream.body();
+        boolean suppressBody = "HEAD".equals(method) || status == 204 || status == 304 || respBody == null || respBody.length == 0;
+        if (suppressBody) {
+            exchange.sendResponseHeaders(status, -1);
+        } else {
+            exchange.sendResponseHeaders(status, respBody.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(respBody);
+            }
+        }
+    }
+
+    private static void servePortalStaticOrSpa(HttpExchange exchange, String rawPath, Path portalDir) throws IOException {
+        String method = exchange.getRequestMethod().toUpperCase(Locale.ROOT);
+        if (!"GET".equals(method) && !"HEAD".equals(method)) {
+            sendPlainText(exchange, 405, "Method Not Allowed");
+            return;
+        }
+
+        Path resolved = resolveSafeChild(portalDir, rawPath);
+        if (resolved != null && Files.isRegularFile(resolved)) {
+            boolean immutableAsset = rawPath.startsWith("/assets/") && !rawPath.endsWith(".html");
+            serveFile(exchange, resolved, immutableAsset, "HEAD".equals(method));
+            return;
+        }
+
+        if ("/admin".equals(rawPath) || rawPath.startsWith("/admin/")) {
+            serveFile(exchange, portalDir.resolve("index.html"), false, "HEAD".equals(method));
+            return;
+        }
+
+        sendPlainText(exchange, 404, "Not Found");
+    }
+
+    private static Path resolveSafeChild(Path root, String rawPath) {
+        String relative = rawPath.startsWith("/") ? rawPath.substring(1) : rawPath;
+        if (relative.isEmpty()) {
+            return null;
+        }
+        String decoded;
+        try {
+            decoded = URLDecoder.decode(relative, StandardCharsets.UTF_8);
+        } catch (IllegalArgumentException e) {
+            return null;
+        }
+        if (decoded.indexOf('\0') >= 0) {
+            return null;
+        }
+        Path candidate = root.resolve(decoded).normalize();
+        return candidate.startsWith(root) ? candidate : null;
+    }
+
+    private static void serveFile(HttpExchange exchange, Path file, boolean immutableAsset, boolean headOnly)
+            throws IOException {
+        byte[] bytes = Files.readAllBytes(file);
+        Headers headers = exchange.getResponseHeaders();
+        headers.set("Content-Type", detectContentType(file.getFileName().toString()));
+        headers.set("X-Content-Type-Options", "nosniff");
+        headers.set("Cache-Control", immutableAsset ? "public, max-age=31536000, immutable" : "no-cache");
+        if (headOnly || bytes.length == 0) {
+            exchange.sendResponseHeaders(200, -1);
+        } else {
+            exchange.sendResponseHeaders(200, bytes.length);
+            try (OutputStream os = exchange.getResponseBody()) {
+                os.write(bytes);
+            }
+        }
+    }
+
+    private static void sendRedirect(HttpExchange exchange, String location) throws IOException {
+        exchange.getResponseHeaders().set("Location", location);
+        exchange.sendResponseHeaders(302, -1);
+    }
+
+    private static void sendPlainText(HttpExchange exchange, int status, String message) throws IOException {
+        byte[] bytes = message.getBytes(StandardCharsets.UTF_8);
+        exchange.getResponseHeaders().set("Content-Type", "text/plain; charset=utf-8");
+        exchange.sendResponseHeaders(status, bytes.length);
+        try (OutputStream os = exchange.getResponseBody()) {
+            os.write(bytes);
+        }
+    }
+
+    private static String detectContentType(String filename) {
+        String lower = filename.toLowerCase(Locale.ROOT);
+        if (lower.endsWith(".html")) return "text/html; charset=utf-8";
+        if (lower.endsWith(".js") || lower.endsWith(".mjs")) return "application/javascript; charset=utf-8";
+        if (lower.endsWith(".css")) return "text/css; charset=utf-8";
+        if (lower.endsWith(".json")) return "application/json; charset=utf-8";
+        if (lower.endsWith(".svg")) return "image/svg+xml";
+        if (lower.endsWith(".png")) return "image/png";
+        if (lower.endsWith(".jpg") || lower.endsWith(".jpeg")) return "image/jpeg";
+        if (lower.endsWith(".ico")) return "image/x-icon";
+        if (lower.endsWith(".pdf")) return "application/pdf";
+        if (lower.endsWith(".woff2")) return "font/woff2";
+        if (lower.endsWith(".woff")) return "font/woff";
+        return "application/octet-stream";
+    }
+
+    private static final class PortalGateway implements AutoCloseable {
+        private final HttpServer server;
+        private final ExecutorService executor;
+
+        private PortalGateway(HttpServer server, ExecutorService executor) {
+            this.server = server;
+            this.executor = executor;
+        }
+
+        @Override
+        public void close() {
+            server.stop(0);
+            executor.shutdownNow();
+        }
     }
 
     private static String trimToNull(String s) {

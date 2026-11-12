@@ -81,9 +81,25 @@ export const LoginPage: React.FC = () => {
             variant="login"
             subtitle="Maharaja Institute of Technology Mysore – Examination Management System"
           />
-          <div className="flex items-center gap-2 text-xs text-[#64748B]">
-            <ShieldCheck className="w-4 h-4 text-[#2563EB] shrink-0" />
-            <span>Central Administrative Portal (Principal & HOD)</span>
+          <div className="flex flex-wrap items-center gap-3 text-xs text-[#64748B]">
+            <div className="flex items-center gap-2">
+              <ShieldCheck className="w-4 h-4 text-[#2563EB] shrink-0" />
+              <span>Central Administrative Portal (Principal & HOD)</span>
+            </div>
+            <span className="text-slate-300 hidden sm:inline" aria-hidden="true">|</span>
+            <a
+              href="/qbank/index.html"
+              className="font-medium text-[#2563EB] hover:underline whitespace-nowrap"
+            >
+              QBank COE & Exam Portal
+            </a>
+            <span className="text-slate-300" aria-hidden="true">·</span>
+            <a
+              href="/qbank/student.html"
+              className="font-medium text-[#2563EB] hover:underline whitespace-nowrap"
+            >
+              Student Exam Portal
+            </a>
           </div>
         </div>
       </header>

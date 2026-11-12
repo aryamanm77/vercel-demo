@@ -12,3 +12,5 @@ certs/
 *.db
 *.class
 .vercel
+node_modules/
+dist/
