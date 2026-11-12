@@ -120,7 +120,11 @@ export const CoeWorkspacePage: React.FC = () => {
         setSelectedSubjectId(String(subList[0].id));
       }
       if (sessList.length > 0 && !rosterSessionId) {
-        setRosterSessionId(String(sessList[0].sessionId));
+        const preferred =
+          sessList.find((s) => s.status === 'LIVE' || s.status === 'FROZEN') ??
+          sessList.find((s) => s.status !== 'ENDED') ??
+          sessList[sessList.length - 1];
+        setRosterSessionId(String(preferred.sessionId));
       }
     } catch (err) {
       setFlash({
