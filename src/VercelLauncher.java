@@ -417,6 +417,8 @@ public final class VercelLauncher {
         boolean hasForwardedHost = false;
         boolean hasForwardedProto = false;
         boolean hasForwardedFor = false;
+        boolean isPortalBannerTarget = rawPath != null
+                && (rawPath.endsWith("/index.html") || rawPath.endsWith("/student.html"));
         for (var entry : reqHeaders.entrySet()) {
             String key = entry.getKey();
             if (key == null) continue;
@@ -427,6 +429,9 @@ public final class VercelLauncher {
             if ("x-forwarded-host".equals(lower)) hasForwardedHost = true;
             if ("x-forwarded-proto".equals(lower)) hasForwardedProto = true;
             if ("x-forwarded-for".equals(lower)) hasForwardedFor = true;
+            if (isPortalBannerTarget && "accept-encoding".equals(lower)) {
+                continue;
+            }
             if (HOP_BY_HOP_REQUEST_HEADERS.contains(lower) || lower.startsWith(":")) {
                 continue;
             }
@@ -480,6 +485,14 @@ public final class VercelLauncher {
 
         int status = upstream.statusCode();
         byte[] respBody = upstream.body();
+        String contentType = upstream.headers().firstValue("content-type").orElse("").toLowerCase(Locale.ROOT);
+        String contentEncoding = upstream.headers().firstValue("content-encoding").orElse("");
+        if ("GET".equals(method) && status == 200 && isPortalBannerTarget
+                && contentEncoding.isEmpty()
+                && contentType.contains("text/html")
+                && respBody != null && respBody.length > 0) {
+            respBody = injectPortalSwitcherBar(respBody);
+        }
         boolean suppressBody = "HEAD".equals(method) || status == 204 || status == 304 || respBody == null || respBody.length == 0;
         if (suppressBody) {
             exchange.sendResponseHeaders(status, -1);
@@ -511,6 +524,29 @@ public final class VercelLauncher {
         }
 
         sendPlainText(exchange, 404, "Not Found");
+    }
+
+    private static byte[] injectPortalSwitcherBar(byte[] htmlBytes) {
+        String html = new String(htmlBytes, StandardCharsets.UTF_8);
+        String bar = "<div id=\"mit-portal-switcher\" style=\"background:#17243A;color:#fff;padding:8px 16px;"
+                + "font-family:system-ui,-apple-system,sans-serif;font-size:12px;display:flex;flex-wrap:wrap;"
+                + "align-items:center;justify-content:space-between;gap:10px;border-bottom:1px solid #334155;\">"
+                + "<span style=\"font-weight:600;color:#93C5FD;\">MIT Mysore Examination &amp; Admin Portal</span>"
+                + "<div style=\"display:flex;flex-wrap:wrap;gap:14px;align-items:center;\">"
+                + "<a href=\"/admin/login\" style=\"color:#fff;font-weight:600;text-decoration:underline;\">Admin Portal Sign In</a>"
+                + "<a href=\"/admin/hod/question-bank\" style=\"color:#CBD5E1;text-decoration:none;\">Question Bank (Excel Images)</a>"
+                + "<a href=\"/admin/hod/student-management\" style=\"color:#CBD5E1;text-decoration:none;\">Student Directory</a>"
+                + "<a href=\"/admin/student\" style=\"color:#A7F3D0;font-weight:600;text-decoration:underline;\">Student Directory Exam Login</a>"
+                + "</div></div>";
+        int bodyIdx = html.toLowerCase(Locale.ROOT).indexOf("<body");
+        if (bodyIdx >= 0) {
+            int closeBracket = html.indexOf('>', bodyIdx);
+            if (closeBracket >= 0) {
+                String updated = html.substring(0, closeBracket + 1) + bar + html.substring(closeBracket + 1);
+                return updated.getBytes(StandardCharsets.UTF_8);
+            }
+        }
+        return (bar + html).getBytes(StandardCharsets.UTF_8);
     }
 
     private static Path resolveSafeChild(Path root, String rawPath) {
