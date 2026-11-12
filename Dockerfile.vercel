@@ -20,6 +20,7 @@ WORKDIR /app
 
 COPY --from=build /out/ /app/
 COPY app/qbank-standalone-1.0.0.jar /app/app/qbank-standalone-1.0.0.jar
+COPY app/qbank-ext.jar /app/app/qbank-ext.jar
 COPY --from=frontend /frontend/dist /app/portal-dist
 
 RUN addgroup -S qbank && adduser -S -G qbank qbank && chown -R qbank:qbank /app

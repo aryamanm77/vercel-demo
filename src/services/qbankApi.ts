@@ -386,11 +386,15 @@ export const qbankApi = {
   student: {
     publicSessions: () =>
       request<PublicSessionOption[]>('/student/public-sessions', { bearerToken: null }),
-    login: (payload: { sessionId: number; rollNumber: string; accessCode: string }) =>
+    login: (payload: { sessionId: number; rollNumber: string; accessCode?: string }) =>
       request<StudentLoginHttpResponse>('/student/login', {
         method: 'POST',
         bearerToken: null,
-        json: payload,
+        json: {
+          sessionId: payload.sessionId,
+          rollNumber: payload.rollNumber,
+          accessCode: payload.accessCode ?? '',
+        },
       }),
     getPaper: (studentToken: string) =>
       request<StudentPaperPayload>('/student/paper', { bearerToken: studentToken }),

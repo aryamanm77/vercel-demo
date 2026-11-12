@@ -61,8 +61,21 @@ public final class VercelLauncher {
         cmd.add(envOrDefault(System.getenv(), "JAVA_OPTS_HEAP", "-Xmx512m"));
         cmd.add("-XX:+ExitOnOutOfMemoryError");
         cmd.add("-Djava.security.egd=file:/dev/./urandom");
-        cmd.add("-jar");
-        cmd.add(cfg.jarPath().toString());
+        Path extJar = cfg.jarPath().getParent() != null
+                ? cfg.jarPath().getParent().resolve("qbank-ext.jar")
+                : null;
+        boolean useExtJar = extJar != null && Files.isRegularFile(extJar);
+        if (useExtJar) {
+            cmd.add("-Dloader.path=" + extJar.toAbsolutePath().normalize());
+            cmd.add("-Dloader.main=com.yourorg.qbank.standalone.QBankStandaloneApplication");
+            cmd.add("-cp");
+            cmd.add(cfg.jarPath().toString());
+            cmd.add("org.springframework.boot.loader.launch.PropertiesLauncher");
+            cmd.add("--spring.main.sources=com.yourorg.qbank.ext.NoAccessCodeConfig");
+        } else {
+            cmd.add("-jar");
+            cmd.add(cfg.jarPath().toString());
+        }
         cmd.add("--server.port=" + qbankPort);
         cmd.add("--server.address=" + qbankBindAddress);
         cmd.add("--server.ssl.enabled=false");
@@ -491,7 +504,8 @@ public final class VercelLauncher {
                 && contentEncoding.isEmpty()
                 && contentType.contains("text/html")
                 && respBody != null && respBody.length > 0) {
-            respBody = injectPortalSwitcherBar(respBody);
+            boolean isClassicStudentHtml = rawPath != null && rawPath.endsWith("/student.html");
+            respBody = injectPortalSwitcherBar(respBody, isClassicStudentHtml);
         }
         boolean suppressBody = "HEAD".equals(method) || status == 204 || status == 304 || respBody == null || respBody.length == 0;
         if (suppressBody) {
@@ -528,6 +542,10 @@ public final class VercelLauncher {
     }
 
     private static byte[] injectPortalSwitcherBar(byte[] htmlBytes) {
+        return injectPortalSwitcherBar(htmlBytes, false);
+    }
+
+    private static byte[] injectPortalSwitcherBar(byte[] htmlBytes, boolean hideStudentAccessCode) {
         String html = new String(htmlBytes, StandardCharsets.UTF_8);
         String bar = "<div id=\"qbank-portal-switcher\" style=\"background:#0F172A;color:#fff;padding:8px 16px;"
                 + "font-family:system-ui,-apple-system,sans-serif;font-size:12px;display:flex;flex-wrap:wrap;"
@@ -539,6 +557,12 @@ public final class VercelLauncher {
                 + "<a href=\"/qbank/index.html\" style=\"color:#CBD5E1;text-decoration:none;\">Classic QBank Console</a>"
                 + "<a href=\"/qbank/student.html\" style=\"color:#CBD5E1;text-decoration:none;\">Classic Student View</a>"
                 + "</div></div>";
+        if (hideStudentAccessCode) {
+            bar += "<script>(function(){function hideCode(){var el=document.getElementById('stu-code');"
+                    + "if(!el)return;el.required=false;el.value='';var f=el.closest('.qb-field');"
+                    + "if(f)f.style.display='none';}if(document.readyState==='loading')"
+                    + "{document.addEventListener('DOMContentLoaded',hideCode);}else{hideCode();}})();</script>";
+        }
         int bodyIdx = html.toLowerCase(Locale.ROOT).indexOf("<body");
         if (bodyIdx >= 0) {
             int closeBracket = html.indexOf('>', bodyIdx);

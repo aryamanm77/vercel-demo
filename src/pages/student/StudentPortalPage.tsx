@@ -59,7 +59,6 @@ export const StudentPortalPage: React.FC = () => {
   const [sessions, setSessions] = useState<PublicSessionOption[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string>('');
   const [rollNumber, setRollNumber] = useState('');
-  const [accessCode, setAccessCode] = useState('');
   const [loginBusy, setLoginBusy] = useState(false);
   const [loginError, setLoginError] = useState<string | null>(null);
   const [loadingSessions, setLoadingSessions] = useState(true);
@@ -272,7 +271,6 @@ export const StudentPortalPage: React.FC = () => {
       const auth = await qbankApi.student.login({
         sessionId: sid,
         rollNumber: rollNumber.trim(),
-        accessCode: accessCode.trim(),
       });
       setStudentToken(auth.signedToken);
       const loadedPaper = await qbankApi.student.getPaper(auth.signedToken);
@@ -335,7 +333,6 @@ export const StudentPortalPage: React.FC = () => {
               setPaper(null);
               setActiveToken(null);
               setFinished(false);
-              setAccessCode('');
               void loadPublicSessions();
             }}
             className="w-full py-2.5 bg-[#0F172A] hover:bg-slate-800 text-white text-sm font-semibold rounded-md"
@@ -532,7 +529,7 @@ export const StudentPortalPage: React.FC = () => {
             <div>
               <h1 className="font-bold text-base tracking-tight">QBank Student Exam Portal</h1>
               <p className="text-xs text-slate-300">
-                Sign in with your Roll Number and COE-issued One-Time Access Code
+                Sign in with your Active Exam Session and Roll Number
               </p>
             </div>
           </div>
@@ -608,20 +605,6 @@ export const StudentPortalPage: React.FC = () => {
                 value={rollNumber}
                 onChange={(e) => setRollNumber(e.target.value)}
                 placeholder="Enter Roll Number"
-                className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
-              />
-            </div>
-            <div>
-              <label className="block text-xs font-semibold text-slate-700 mb-1">
-                One-Time Access Code
-              </label>
-              <input
-                type="password"
-                required
-                autoComplete="off"
-                value={accessCode}
-                onChange={(e) => setAccessCode(e.target.value)}
-                placeholder="Issued by COE"
                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-md"
               />
             </div>
