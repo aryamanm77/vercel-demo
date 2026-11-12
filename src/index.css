@@ -1,0 +1,39 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Public Sans", system-ui, -apple-system, sans-serif;
+  --font-display: "Plus Jakarta Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", monospace;
+
+  --color-mit-navy: #17243A;
+  --color-mit-navy-light: #1E2F4B;
+  --color-mit-blue: #2563EB;
+  --color-mit-blue-hover: #1D4ED8;
+  --color-mit-violet: #6D5CE8;
+  --color-mit-bg: #F5F7FB;
+  --color-mit-surface: #FFFFFF;
+  --color-mit-text: #1F2937;
+  --color-mit-muted: #64748B;
+  --color-mit-border: #D9E2EF;
+  --color-mit-success: #16834A;
+  --color-mit-warning: #B7791F;
+  --color-mit-error: #B42318;
+}
+
+@layer base {
+  body {
+    background-color: #F5F7FB;
+    color: #1F2937;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: var(--font-display);
+  }
+}
+
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
