@@ -155,7 +155,7 @@ public final class VercelLauncherTest {
                                 HttpRequest.newBuilder(URI.create("http://127.0.0.1:" + port + "/"))
                                         .timeout(Duration.ofSeconds(2)).GET().build(),
                                 HttpResponse.BodyHandlers.ofString());
-                        if (rootRedirect.statusCode() != 302 || !"/qbank/index.html".equals(rootRedirect.headers().firstValue("Location").orElse(""))) {
+                        if (rootRedirect.statusCode() != 302 || !"/admin/login".equals(rootRedirect.headers().firstValue("Location").orElse(""))) {
                             throw new AssertionError("Unexpected root redirect: " + rootRedirect.statusCode() + " -> " + rootRedirect.headers().map());
                         }
                         HttpResponse<String> adminSpa = client.send(

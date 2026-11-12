@@ -387,8 +387,7 @@ public final class VercelLauncher {
         }
 
         if ("/".equals(rawPath)) {
-            String target = (basePath.isEmpty() ? "" : basePath) + "/index.html";
-            sendRedirect(exchange, target);
+            sendRedirect(exchange, "/admin/login");
             return;
         }
 

@@ -3,7 +3,7 @@
   "redirects": [
     {
       "source": "/",
-      "destination": "/qbank/index.html",
+      "destination": "/admin/login",
       "permanent": false
     }
   ]
