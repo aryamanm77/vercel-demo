@@ -1,10 +1,10 @@
 .env
 .env.local
 .env.*.local
-out/
-secrets/
-data/
-certs/
+/out/
+/secrets/
+/data/
+/certs/
 *.key
 *.p12
 *.log
